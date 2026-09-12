@@ -25,4 +25,10 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("through the Cursor harness.");
     expect(instructions).not.toContain("reasoning effort");
   });
+
+  it("instructs agents to bootstrap harness memory and write thoughts", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain("memory_bootstrap");
+    expect(instructions).toContain("thought");
+  });
 });
