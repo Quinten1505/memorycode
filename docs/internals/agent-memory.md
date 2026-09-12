@@ -18,3 +18,22 @@ Tool schemas and handlers live under
 [toolkits/memory](../../apps/server/src/mcp/toolkits/memory/). The store and
 schema apply path live under
 [memory/](../../apps/server/src/memory/).
+
+## Turn-end extractor (Phase C)
+
+After `turn.completed`, [MemoryIngestReactor](../../apps/server/src/orchestration/Layers/MemoryIngestReactor.ts)
+runs asynchronously (`forkParked`). Failures log and publish nothing that
+blocks the T3 turn.
+
+The job does not copy the transcript into Surreal (L0 stays in T3). It:
+
+1. Upserts a `run` pointing at `thread_id` / `turn_id`.
+2. Writes `observation` rows from user/assistant text (tail-capped).
+3. Promotes only **labeled** lines (`Constraint: …`, `Decision: …`, `Lesson: …`,
+   and the other closed types) via the same `remember` path agents use.
+   Constraints stay `proposed`. The promoter never sets `confirm: true`.
+4. Skips a promotion when recall already has a live card with the same title
+   in that project.
+
+This is heuristic, not a second LLM. Agents can still call `memory_remember`
+during the turn; ingest is the backstop when they do not.

@@ -30,3 +30,9 @@ Every chat already receives the `t3-code` memory tools. There is nothing to
 enable per thread or per provider. If Surreal cannot start or connect, chats
 still start normally; memory tool calls report that the backend is unavailable
 instead of blocking the session.
+
+After each completed turn, T3 also runs a background extractor. It stores
+short observations from the turn and promotes only lines the assistant (or
+user) labeled as `Decision:`, `Constraint:`, `Lesson:`, and similar closed
+types. Those promotions stay `proposed` until you confirm them. A failed
+extractor does not stall the chat.

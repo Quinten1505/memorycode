@@ -1,7 +1,14 @@
 import * as Effect from "effect/Effect";
 
 import type { StoredMemoryEdge, StoredMemoryRecord } from "./cards.ts";
-import type { BootstrapInput, MemoryStore, RecallInput, RememberInput } from "./MemoryStore.ts";
+import type {
+  BootstrapInput,
+  IngestTurnInput,
+  MemoryStore,
+  RecallInput,
+  RememberInput,
+} from "./MemoryStore.ts";
+import { runIngestTurn } from "./ingestTurn.ts";
 import {
   applyStatus,
   assertReclassifyTarget,
@@ -125,6 +132,29 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
       Effect.withSpan("InMemoryMemoryStore.bootstrap"),
     );
 
+  const ingestTurn = (input: IngestTurnInput) =>
+    runIngestTurn(
+      { remember, recall },
+      (draft) =>
+        Effect.sync(() => {
+          const id = `observation:${draft.slug}`;
+          records.set(id, {
+            id,
+            type: "observation",
+            title: draft.title,
+            body: draft.body,
+            status: "open",
+            confidence: 0.6,
+            scope: [`project:${input.projectSlug}`],
+            tags: [],
+            extra: { kind: draft.kind },
+            authoredBy: "agent:extractor",
+          });
+          return id;
+        }),
+      input,
+    ).pipe(Effect.withSpan("InMemoryMemoryStore.ingestTurn"));
+
   return {
     remember,
     get,
@@ -133,5 +163,6 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
     reclassify,
     recall,
     bootstrap,
+    ingestTurn,
   };
 };

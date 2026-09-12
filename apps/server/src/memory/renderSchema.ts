@@ -317,6 +317,8 @@ function renderSeeds(): string {
   return [
     ...providers,
     `UPSERT agent:harness SET title = "harness", kind = "harness", status = "active", scope = <set>[], tags = <set>[], updated_at = time::now();`,
+    `UPSERT agent:extractor SET title = "extractor", kind = "extractor", status = "active", scope = <set>[], tags = <set>[], updated_at = time::now();`,
+    `UPSERT agent:promoter SET title = "promoter", kind = "promoter", status = "active", scope = <set>[], tags = <set>[], updated_at = time::now();`,
   ].join("\n");
 }
 

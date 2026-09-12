@@ -72,6 +72,7 @@ import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
+import { MemoryIngestReactorLive } from "./orchestration/Layers/MemoryIngestReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
@@ -283,12 +284,14 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
+  Layer.provideMerge(MemoryIngestReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(ThreadSettlementReactor.layer),
   Layer.provideMerge(PullRequestSyncReactor.layer),
   Layer.provideMerge(ThreadPullRequestReactor.layer),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
+  Layer.provide(MemoryService.layer),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(

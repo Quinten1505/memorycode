@@ -50,6 +50,26 @@ export interface BootstrapInput {
   readonly include_inbox?: boolean;
 }
 
+export interface IngestMessage {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly turnId: string | null;
+}
+
+export interface IngestTurnInput {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly projectSlug: string;
+  readonly provider: string;
+  readonly messages: ReadonlyArray<IngestMessage>;
+}
+
+export interface IngestTurnResult {
+  readonly runId: string;
+  readonly observationIds: ReadonlyArray<string>;
+  readonly promotedIds: ReadonlyArray<string>;
+}
+
 export interface BootstrapResult {
   readonly project?: MemoryCard;
   readonly constraints: ReadonlyArray<MemoryCard>;
@@ -91,4 +111,5 @@ export interface MemoryStore {
     input: RecallInput,
   ) => Effect.Effect<{ cards: MemoryCard[]; tokens_est: number }, MemoryToolError>;
   readonly bootstrap: (input: BootstrapInput) => Effect.Effect<BootstrapResult, MemoryToolError>;
+  readonly ingestTurn: (input: IngestTurnInput) => Effect.Effect<IngestTurnResult, MemoryToolError>;
 }

@@ -4,7 +4,14 @@ import { RecordId } from "surrealdb";
 import type { StoredMemoryEdge, StoredMemoryRecord } from "./cards.ts";
 import { MemoryToolError } from "./errors.ts";
 import { parseRecordId } from "./ids.ts";
-import type { BootstrapInput, MemoryStore, RecallInput, RememberInput } from "./MemoryStore.ts";
+import type {
+  BootstrapInput,
+  IngestTurnInput,
+  MemoryStore,
+  RecallInput,
+  RememberInput,
+} from "./MemoryStore.ts";
+import { kebabSlug, runIngestTurn, runSlugForTurn } from "./ingestTurn.ts";
 import {
   applyStatus,
   assertReclassifyTarget,
@@ -40,7 +47,7 @@ export type MemorySurrealClient = {
 };
 
 const FULL_SPINE = new Set<string>([...L3_TYPES, "episode"]);
-const HAS_BODY = new Set<string>([...FULL_SPINE, "component", "interface"]);
+const HAS_BODY = new Set<string>([...FULL_SPINE, "component", "interface", "observation"]);
 const EDGE_TABLE_SQL = EDGE_VERBS.join(", ");
 const BOOTSTRAP_TABLE_SQL =
   "project, constraint, convention, preference, incident, lesson, thought";
@@ -483,6 +490,38 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     return bootstrapFromStore(records, input);
   });
 
+  const ingestTurn = Effect.fn("SurrealMemoryStore.ingestTurn")(function* (input: IngestTurnInput) {
+    const runSlug = runSlugForTurn(input.turnId);
+    const providerSlug = kebabSlug(input.provider) || "other";
+    yield* run("UPSERT $id MERGE $content RETURN AFTER", {
+      id: toRecordId(`run:${runSlug}`),
+      content: {
+        provider: toRecordId(`provider:${providerSlug}`),
+        agent: toRecordId("agent:extractor"),
+        t3_thread_id: input.threadId,
+        t3_turn_id: input.turnId,
+        status: "completed",
+      },
+    });
+    return yield* runIngestTurn(
+      { remember, recall },
+      (draft) =>
+        run("UPSERT $id MERGE $content RETURN AFTER", {
+          id: toRecordId(`observation:${draft.slug}`),
+          content: {
+            title: draft.title,
+            body: draft.body,
+            kind: draft.kind,
+            status: "open",
+            scope: new Set([`project:${input.projectSlug}`]),
+            tags: new Set<string>(),
+            source_run: toRecordId(`run:${runSlug}`),
+          },
+        }).pipe(Effect.map(() => `observation:${draft.slug}`)),
+      input,
+    );
+  });
+
   return {
     remember,
     get,
@@ -491,5 +530,6 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     reclassify,
     recall,
     bootstrap,
+    ingestTurn,
   };
 };

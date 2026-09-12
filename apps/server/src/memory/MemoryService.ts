@@ -51,6 +51,7 @@ export const unavailableStore: MemoryStore = {
   reclassify: () => unavailable(),
   recall: () => unavailable(),
   bootstrap: () => unavailable(),
+  ingestTurn: () => unavailable(),
 };
 
 const openStore = async (

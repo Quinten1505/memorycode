@@ -61,8 +61,17 @@ describe("MemoryService unavailable fallback", () => {
           .pipe(Effect.flip),
         yield* unavailableStore.recall({ query: "uio" }).pipe(Effect.flip),
         yield* unavailableStore.bootstrap({ project: "te0820-hil" }).pipe(Effect.flip),
+        yield* unavailableStore
+          .ingestTurn({
+            threadId: "thread-x",
+            turnId: "turn-x",
+            projectSlug: "te0820-hil",
+            provider: "grok",
+            messages: [],
+          })
+          .pipe(Effect.flip),
       ];
-      expect(errors.map((error) => error.error)).toEqual(Array(7).fill("backend_unavailable"));
+      expect(errors.map((error) => error.error)).toEqual(Array(8).fill("backend_unavailable"));
     }),
   );
 
