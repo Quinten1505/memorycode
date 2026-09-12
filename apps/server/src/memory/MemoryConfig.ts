@@ -11,6 +11,9 @@ export interface MemoryConfigValue {
   readonly username: string | undefined;
   readonly password: string | undefined;
   readonly embedDim: number;
+  /** When true (default), T3 starts a loopback Surreal if one is not already healthy. */
+  readonly autostart: boolean;
+  readonly dataDir: string | undefined;
 }
 
 const DEFAULT_NAMESPACE = "harness";
@@ -33,6 +36,16 @@ const parseEmbedDim = (value: string | undefined): number => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_EMBED_DIM;
 };
 
+const parseAutostart = (value: string | undefined): boolean => {
+  const normalized = present(value)?.toLowerCase();
+  if (normalized === undefined) {
+    return true;
+  }
+  return (
+    normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off"
+  );
+};
+
 export function decodeMemoryConfig(
   env: Readonly<Record<string, string | undefined>>,
 ): MemoryConfigValue {
@@ -43,6 +56,8 @@ export function decodeMemoryConfig(
     username: present(env.SURREAL_USER),
     password: present(env.SURREAL_PASS),
     embedDim: parseEmbedDim(env.EMBED_DIM),
+    autostart: parseAutostart(env.SURREAL_AUTOSTART),
+    dataDir: present(env.SURREAL_DATA_DIR),
   };
 }
 
@@ -68,6 +83,11 @@ const MemoryEnvConfig = Config.all({
     Config.option,
     Config.map((option) => parseEmbedDim(Option.getOrUndefined(option))),
   ),
+  autostart: Config.string("SURREAL_AUTOSTART").pipe(
+    Config.option,
+    Config.map((option) => parseAutostart(Option.getOrUndefined(option))),
+  ),
+  dataDir: optionalText("SURREAL_DATA_DIR"),
 });
 
 export class MemoryConfig extends Context.Service<MemoryConfig, MemoryConfigValue>()(

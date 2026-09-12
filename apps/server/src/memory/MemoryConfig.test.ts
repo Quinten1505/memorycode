@@ -29,11 +29,15 @@ describe("MemoryConfig", () => {
       username: "root",
       password: "root",
       embedDim: 1536,
+      autostart: true,
+      dataDir: undefined,
     });
   });
 
-  it("absent URL means unconfigured", () => {
+  it("absent URL still autostarts a local backend", () => {
     expect(decodeMemoryConfig({}).url).toBeUndefined();
+    expect(decodeMemoryConfig({}).autostart).toBe(true);
+    expect(decodeMemoryConfig({ SURREAL_AUTOSTART: "0" }).autostart).toBe(false);
   });
 
   it("invalid EMBED_DIM defaults to 1536", () => {
@@ -62,7 +66,7 @@ describe("MemoryService unavailable fallback", () => {
     }),
   );
 
-  it.effect("no SURREAL_URL uses unavailableStore", () =>
+  it.effect("autostart disabled and no URL uses unavailableStore", () =>
     Effect.gen(function* () {
       const service = yield* MemoryService;
       const err = yield* service.store
@@ -81,11 +85,54 @@ describe("MemoryService unavailable fallback", () => {
             username: undefined,
             password: undefined,
             embedDim: 1536,
+            autostart: false,
+            dataDir: undefined,
           }),
         ),
       ),
     ),
   );
+
+  it.effect("autostart with no URL starts the local backend before connecting", () => {
+    const ensure = vi.fn(async () => "started");
+    const connect = vi.fn(async () => undefined);
+    const query = vi.fn(async () => []);
+    return Effect.gen(function* () {
+      yield* MemoryService;
+      expect(ensure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "ws://127.0.0.1:8000",
+          username: "root",
+          password: "root",
+          namespace: "harness",
+          database: "memory",
+        }),
+      );
+      expect(connect).toHaveBeenCalled();
+    }).pipe(
+      Effect.provide(
+        Layer.effect(
+          MemoryService,
+          make(() => ({ connect, query }), ensure),
+        ),
+      ),
+      Effect.provide(
+        Layer.succeed(
+          MemoryConfig,
+          MemoryConfig.of({
+            url: undefined,
+            namespace: "harness",
+            database: "memory",
+            username: undefined,
+            password: undefined,
+            embedDim: 1536,
+            autostart: true,
+            dataDir: undefined,
+          }),
+        ),
+      ),
+    );
+  });
 
   it.effect("connect failure falls back to unavailableStore", () => {
     const connect = vi.fn(async () => {
@@ -115,6 +162,8 @@ describe("MemoryService unavailable fallback", () => {
             username: "root",
             password: "root",
             embedDim: 1536,
+            autostart: false,
+            dataDir: undefined,
           }),
         ),
       ),
@@ -153,6 +202,8 @@ describe("MemoryConfig.layer", () => {
         username: "root",
         password: "root",
         embedDim: 1536,
+        autostart: true,
+        dataDir: undefined,
       });
     }).pipe(
       Effect.provide(MemoryConfig.layer),

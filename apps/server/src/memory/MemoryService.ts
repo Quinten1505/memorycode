@@ -3,13 +3,42 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Surreal } from "surrealdb";
 
+import {
+  DEFAULT_LOCAL_PASS,
+  DEFAULT_LOCAL_URL,
+  DEFAULT_LOCAL_USER,
+  defaultMemoryDataDir,
+  ensureLocalSurreal,
+  isLoopbackUrl,
+} from "./ensureLocalSurreal.ts";
 import { MemoryToolError } from "./errors.ts";
-import { MemoryConfig } from "./MemoryConfig.ts";
+import { MemoryConfig, type MemoryConfigValue } from "./MemoryConfig.ts";
 import type { MemoryStore } from "./MemoryStore.ts";
 import { renderMemorySchema } from "./renderSchema.ts";
 import { makeSurrealMemoryStore, type MemorySurrealClient } from "./SurrealMemoryStore.ts";
 
 export type MemorySurrealFactory = () => MemorySurrealClient;
+
+export type EnsureLocalSurreal = (
+  input: Parameters<typeof ensureLocalSurreal>[0],
+) => Promise<unknown>;
+
+const resolvedBackend = (config: MemoryConfigValue) => {
+  const url = config.url ?? (config.autostart ? DEFAULT_LOCAL_URL : undefined);
+  if (url === undefined) {
+    return undefined;
+  }
+  return {
+    url,
+    namespace: config.namespace,
+    database: config.database,
+    username: config.username ?? DEFAULT_LOCAL_USER,
+    password: config.password ?? DEFAULT_LOCAL_PASS,
+    embedDim: config.embedDim,
+    dataDir: config.dataDir ?? defaultMemoryDataDir(),
+    autostart: config.autostart,
+  };
+};
 
 const unavailable = () => Effect.fail(new MemoryToolError({ error: "backend_unavailable" }));
 
@@ -60,16 +89,52 @@ const openStore = async (
 };
 
 /** @public Service construction is part of the canonical Effect module API. */
-export const make = (createSurreal: MemorySurrealFactory = () => new Surreal()) =>
+export const make = (
+  createSurreal: MemorySurrealFactory = () => new Surreal(),
+  ensureLocal?: EnsureLocalSurreal,
+) =>
   Effect.gen(function* () {
     const config = yield* MemoryConfig;
-    if (config.url === undefined) {
+    const backend = resolvedBackend(config);
+    if (backend === undefined) {
       yield* Effect.logInfo("memory MCP tools are registered but have no backend");
       return MemoryService.of({ store: unavailableStore });
     }
-    const url = config.url;
+    if (backend.autostart && isLoopbackUrl(backend.url)) {
+      const localInput = {
+        url: backend.url,
+        username: backend.username,
+        password: backend.password,
+        namespace: backend.namespace,
+        database: backend.database,
+        dataDir: backend.dataDir,
+      };
+      yield* Effect.tryPromise({
+        try: () =>
+          ensureLocal !== undefined
+            ? ensureLocal(localInput)
+            : ensureLocalSurreal(localInput, { commandPath: "surreal" }),
+        catch: (cause) => (cause instanceof Error ? cause : new Error("surreal start failed")),
+      }).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Could not autostart local SurrealDB", { cause }),
+        ),
+        Effect.ignore,
+      );
+    }
+    const url = backend.url;
     const store = yield* Effect.tryPromise({
-      try: () => openStore(url, config, createSurreal),
+      try: () =>
+        openStore(
+          url,
+          {
+            ...config,
+            url,
+            username: backend.username,
+            password: backend.password,
+          },
+          createSurreal,
+        ),
       catch: (cause) => (cause instanceof Error ? cause : new Error("surreal connect failed")),
     }).pipe(
       Effect.tapError((cause) =>
