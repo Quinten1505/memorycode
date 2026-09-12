@@ -148,7 +148,7 @@ const EXTRA_SQL: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
   person: {
     kind: `TYPE string ASSERT $value IN ["operator", "collaborator", "vendor-contact", "other"]`,
-    handles: "FLEXIBLE TYPE option<object>",
+    handles: "TYPE option<object> FLEXIBLE",
   },
   vendor: { url: "TYPE option<string>" },
   tool: {
@@ -255,8 +255,8 @@ function renderNodeTable(table: string): string {
     );
     statements.push(field(table, "status", `TYPE string DEFAULT "open"`));
     statements.push(field(table, "confidence", CONFIDENCE_TYPE));
-    statements.push(field(table, "scope", "TYPE set<string> DEFAULT []"));
-    statements.push(field(table, "tags", "TYPE set<string> DEFAULT []"));
+    statements.push(field(table, "scope", "TYPE set<string> DEFAULT <set>[]"));
+    statements.push(field(table, "tags", "TYPE set<string> DEFAULT <set>[]"));
     statements.push(field(table, "embedding", "TYPE option<array<float>>"));
     statements.push(field(table, "created_at", "TYPE datetime DEFAULT time::now() READONLY"));
     statements.push(field(table, "updated_at", "TYPE datetime DEFAULT time::now()"));
@@ -282,8 +282,8 @@ function spineFields(table: string, kind: "full" | "topology"): string[] {
   if (kind === "full") {
     statements.push(field(table, "confidence", CONFIDENCE_TYPE));
   }
-  statements.push(field(table, "scope", "TYPE set<string> DEFAULT []"));
-  statements.push(field(table, "tags", "TYPE set<string> DEFAULT []"));
+  statements.push(field(table, "scope", "TYPE set<string> DEFAULT <set>[]"));
+  statements.push(field(table, "tags", "TYPE set<string> DEFAULT <set>[]"));
   if (kind === "full" || indexed) {
     statements.push(field(table, "embedding", "TYPE option<array<float>>"));
   }
@@ -316,9 +316,10 @@ function renderSeeds(): string {
   const providers = PROVIDERS.map(
     (slug) => `UPSERT provider:${slug} CONTENT { title: "${slug}" };`,
   );
-  return [...providers, `UPSERT agent:harness CONTENT { title: "harness", kind: "harness" };`].join(
-    "\n",
-  );
+  return [
+    ...providers,
+    `UPSERT agent:harness CONTENT { title: "harness", kind: "harness", status: "active", scope: <set>[], tags: <set>[] };`,
+  ].join("\n");
 }
 
 function renderEdgeTable(verb: EdgeVerb): string {

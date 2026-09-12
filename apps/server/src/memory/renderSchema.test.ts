@@ -211,7 +211,7 @@ describe("renderMemorySchema", () => {
     expect(sql).toContain("DEFINE FIELD OVERWRITE body ON component");
     expect(sql).toContain("DEFINE FIELD OVERWRITE embedding ON component");
 
-    expect(sql).toContain("DEFINE FIELD OVERWRITE handles ON person FLEXIBLE TYPE option<object>");
+    expect(sql).toContain("DEFINE FIELD OVERWRITE handles ON person TYPE option<object> FLEXIBLE");
 
     for (const [type, spec] of Object.entries(EXTRA_FIELDS)) {
       for (const key of spec.keys) {
