@@ -313,12 +313,10 @@ function extraFields(table: string): string[] {
 }
 
 function renderSeeds(): string {
-  const providers = PROVIDERS.map(
-    (slug) => `UPSERT provider:${slug} CONTENT { title: "${slug}" };`,
-  );
+  const providers = PROVIDERS.map((slug) => `UPSERT provider:${slug} SET title = "${slug}";`);
   return [
     ...providers,
-    `UPSERT agent:harness CONTENT { title: "harness", kind: "harness", status: "active", scope: <set>[], tags: <set>[] };`,
+    `UPSERT agent:harness SET title = "harness", kind = "harness", status = "active", scope = <set>[], tags = <set>[], updated_at = time::now();`,
   ].join("\n");
 }
 

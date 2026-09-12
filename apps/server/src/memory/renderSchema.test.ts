@@ -228,10 +228,10 @@ describe("renderMemorySchema", () => {
   it("seeds providers and agent:harness after node tables exist", () => {
     const sql = renderMemorySchema({ embedDim: 1536 });
     for (const slug of PROVIDERS) {
-      expect(sql).toContain(`UPSERT provider:${slug} CONTENT`);
+      expect(sql).toContain(`UPSERT provider:${slug} SET title`);
     }
-    expect(sql).toContain("UPSERT agent:harness CONTENT");
-    expect(sql).toContain('kind: "harness"');
+    expect(sql).toContain("UPSERT agent:harness SET");
+    expect(sql).toContain('kind = "harness"');
   });
 
   it("defines edge IN/OUT unions, shared fields, and UNIQUE (in,out) except mentions and evidenced_by", () => {
