@@ -18,4 +18,10 @@ describe("ids", () => {
       slug: "open-question-uio",
     });
   });
+  it("strips Surreal escape brackets from ids", () => {
+    expect(parseRecordId("thought:⟨session-start-empty-graph⟩")).toEqual({
+      type: "thought",
+      slug: "session-start-empty-graph",
+    });
+  });
 });

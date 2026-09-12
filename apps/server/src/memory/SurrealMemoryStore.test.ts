@@ -52,7 +52,7 @@ describe("SurrealMemoryStore", () => {
   it.effect("remember issues parameterized SurrealQL and never interpolates slug", () =>
     Effect.gen(function* () {
       const query = vi.fn(async (sql: string) => {
-        if (sql.includes("UPSERT") || sql.includes("CONTENT")) {
+        if (sql.includes("UPSERT") || sql.includes("MERGE")) {
           return [decisionRow];
         }
         return [];
@@ -69,8 +69,9 @@ describe("SurrealMemoryStore", () => {
       }
       expect(boundId(queryVars(upsert))).toEqual({ table: "decision", id: slug });
       const content = queryVars(upsert)?.content as Record<string, unknown> | undefined;
-      expect(typeof content?.valid_from).toBe("string");
-      expect(Number.isNaN(Date.parse(String(content?.valid_from)))).toBe(false);
+      expect(content?.scope).toBeInstanceOf(Set);
+      expect([...(content?.scope as Set<string>)]).toEqual(base.scope);
+      expect(content?.valid_from).toBeInstanceOf(Date);
     }),
   );
 
@@ -90,6 +91,27 @@ describe("SurrealMemoryStore", () => {
       expect(missingExtra.error).toBe("type_mismatch");
       expect(missingExtra.hint).toContain("severity");
       expect(query).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("reads Surreal sets back as string arrays", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("ONLY")) {
+          return [
+            {
+              ...decisionRow,
+              scope: new Set(base.scope),
+              tags: new Set(["hw"]),
+            },
+          ];
+        }
+        return [];
+      });
+      const store = makeSurrealMemoryStore(makeClient(query));
+      const got = yield* store.get({ id: `decision:${slug}` });
+      expect(got.card.scope).toEqual(base.scope);
+      expect(got.card.tags).toEqual(["hw"]);
     }),
   );
 

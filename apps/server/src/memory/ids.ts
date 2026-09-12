@@ -25,7 +25,7 @@ export function parseRecordId(id: string): { type: string; slug: string } {
     });
   }
   const type = id.slice(0, colon);
-  const slug = id.slice(colon + 1);
+  const slug = id.slice(colon + 1).replaceAll(/[⟨⟩`]/g, "");
   assertSlug(slug);
   return { type, slug };
 }

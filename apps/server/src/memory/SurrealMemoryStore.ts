@@ -82,10 +82,13 @@ const stringifyId = (value: unknown): string | undefined => {
 };
 
 const asStringArray = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string");
   }
-  return value.filter((entry): entry is string => typeof entry === "string");
+  if (value instanceof Set) {
+    return [...value].filter((entry): entry is string => typeof entry === "string");
+  }
+  return [];
 };
 
 const extraKeys = (type: string): readonly string[] => {
@@ -206,8 +209,8 @@ const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
   const content: Record<string, unknown> = {
     title: record.title,
     status: record.status,
-    scope: record.scope,
-    tags: record.tags,
+    scope: new Set(record.scope),
+    tags: new Set(record.tags),
   };
   if (HAS_BODY.has(record.type)) {
     content.body = record.body;
@@ -221,7 +224,8 @@ const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
       content.authored_by = new RecordId("agent", "harness");
     }
     if (record.validFrom !== undefined) {
-      content.valid_from = record.validFrom;
+      const parsed = Date.parse(record.validFrom);
+      content.valid_from = Number.isNaN(parsed) ? record.validFrom : new Date(parsed);
     }
   }
   Object.assign(content, record.extra);
@@ -312,10 +316,7 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     const id = yield* validateRememberInput(input);
     const existing = yield* loadRecord(id);
     const { record, links } = yield* buildRemember(input, id, existing);
-    const writeSql =
-      existing === undefined
-        ? "UPSERT $id CONTENT $content RETURN AFTER"
-        : "UPDATE $id MERGE $content RETURN AFTER";
+    const writeSql = "UPSERT $id MERGE $content RETURN AFTER";
     const rows = yield* run(writeSql, {
       id: toRecordId(id),
       content: toContent(record),
