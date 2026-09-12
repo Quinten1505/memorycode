@@ -11,6 +11,7 @@ export type StoredMemoryRecord = {
   readonly tags: ReadonlyArray<string>;
   readonly extra: Readonly<Record<string, unknown>>;
   readonly authoredBy: string;
+  readonly validFrom?: string;
 };
 
 export type StoredMemoryEdge = {

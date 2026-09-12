@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { DEFAULT_STATUS, EDGE_VERBS, LIVE_STATUSES, REMEMBER_TYPES } from "./vocabulary.ts";
+import {
+  DEFAULT_STATUS,
+  EDGE_VERBS,
+  EXTRA_FIELDS,
+  LIVE_STATUSES,
+  REMEMBER_TYPES,
+} from "./vocabulary.ts";
 
 describe("vocabulary", () => {
   it("includes the closed remember types from the ontology", () => {
@@ -94,5 +100,20 @@ describe("vocabulary", () => {
     expect(LIVE_STATUSES.schema_proposal).toEqual(["proposed", "accepted"]);
     expect(LIVE_STATUSES.episode).toEqual(["open"]);
     expect(LIVE_STATUSES.project).toEqual(["active"]);
+  });
+
+  it("requires SCHEMAFULL extras that are not option types", () => {
+    expect(EXTRA_FIELDS.constraint.required).toEqual(["severity"]);
+    expect(EXTRA_FIELDS.lesson.required).toEqual(["kind"]);
+    expect(EXTRA_FIELDS.schema_proposal.required).toEqual([
+      "proposed_table",
+      "proposed_kind",
+      "justification",
+      "example_ids",
+    ]);
+    expect(EXTRA_FIELDS.component.required).toEqual(["kind"]);
+    expect(EXTRA_FIELDS.interface.required).toEqual(["kind"]);
+    expect(EXTRA_FIELDS.person.required).toEqual(["kind"]);
+    expect(EXTRA_FIELDS.tool.required).toEqual(["kind"]);
   });
 });

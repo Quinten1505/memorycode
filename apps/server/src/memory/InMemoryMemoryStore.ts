@@ -4,6 +4,7 @@ import type { StoredMemoryEdge, StoredMemoryRecord } from "./cards.ts";
 import type { BootstrapInput, MemoryStore, RecallInput, RememberInput } from "./MemoryStore.ts";
 import {
   applyStatus,
+  assertReclassifyTarget,
   bootstrapFromStore,
   buildRemember,
   cardOf,
@@ -14,6 +15,7 @@ import {
   recallFromStore,
   shouldAddEdge,
   validateRememberInput,
+  withEdgeDefaults,
 } from "./storeLogic.ts";
 
 export const makeInMemoryMemoryStore = (): MemoryStore => {
@@ -21,10 +23,11 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
   const edges: StoredMemoryEdge[] = [];
 
   const applyEdge = (edge: StoredMemoryEdge) => {
-    if (!shouldAddEdge(edges, edge)) {
+    const next = withEdgeDefaults(edge);
+    if (!shouldAddEdge(edges, next)) {
       return;
     }
-    edges.push(edge);
+    edges.push(next);
   };
 
   const remember = Effect.fn("InMemoryMemoryStore.remember")(function* (input: RememberInput) {
@@ -53,7 +56,7 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
     meta?: Readonly<Record<string, unknown>>;
   }) {
     yield* checkLinkTypes(input);
-    if (!records.has(input.from)) {
+    if (!records.has(input.from) || !records.has(input.to)) {
       return yield* fail("not_found");
     }
     applyEdge({
@@ -95,6 +98,7 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
     confirm?: boolean;
   }) {
     const thought = yield* planReclassifySource(input.from, records.get(input.from));
+    yield* assertReclassifyTarget(input.to_type);
     const created = yield* remember({
       type: input.to_type,
       slug: input.to_slug,

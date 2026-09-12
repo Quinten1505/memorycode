@@ -213,10 +213,12 @@ export const EXTRA_FIELDS = {
   decision: { keys: ["alternatives"] },
   constraint: {
     keys: ["severity", "authority"],
+    required: ["severity"],
     enums: { severity: ["blocker", "high", "medium"] },
   },
   lesson: {
     keys: ["kind"],
+    required: ["kind"],
     enums: { kind: ["practice", "anti-pattern", "gotcha"] },
   },
   incident: { keys: ["detected_at", "resolved_at"] },
@@ -230,9 +232,21 @@ export const EXTRA_FIELDS = {
   },
   schema_proposal: {
     keys: ["proposed_table", "proposed_kind", "justification", "example_ids", "suggested_fields"],
+    required: ["proposed_table", "proposed_kind", "justification", "example_ids"],
+    enums: { proposed_kind: ["node", "edge"] },
   },
-  component: { keys: ["kind", "primary_path"] },
-  interface: { keys: ["kind"] },
+  component: {
+    keys: ["kind", "primary_path"],
+    required: ["kind"],
+    enums: {
+      kind: ["software", "firmware", "fpga", "pcb", "mechanical", "service", "testbench", "other"],
+    },
+  },
+  interface: {
+    keys: ["kind"],
+    required: ["kind"],
+    enums: { kind: ["api", "abi", "bus", "pin", "schema", "cli", "rpc", "other"] },
+  },
   artifact: {
     keys: ["uri", "media", "content_hash"],
     required: ["uri"],
@@ -245,9 +259,17 @@ export const EXTRA_FIELDS = {
     keys: ["full_name", "default_branch", "origin_url"],
     required: ["full_name"],
   },
-  person: { keys: ["kind", "handles"] },
+  person: {
+    keys: ["kind", "handles"],
+    required: ["kind"],
+    enums: { kind: ["operator", "collaborator", "vendor-contact", "other"] },
+  },
   vendor: { keys: ["url"] },
-  tool: { keys: ["kind", "current_version"] },
+  tool: {
+    keys: ["kind", "current_version"],
+    required: ["kind"],
+    enums: { kind: ["cli", "ide", "eda", "lab", "model", "service", "other"] },
+  },
   project: { keys: ["root_path"] },
   episode: { keys: ["started_at", "ended_at"] },
 } as const satisfies Readonly<Partial<Record<RememberType, ExtraFieldSpec>>>;

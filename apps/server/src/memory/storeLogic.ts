@@ -28,6 +28,7 @@ import {
   EDGE_VERB_SET,
   EXTRA_FIELDS,
   KNOWLEDGE_TYPES,
+  L3_TYPES,
   LIVE_STATUSES,
   REMEMBER_TYPE_SET,
   type EdgeVerb,
@@ -51,6 +52,7 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = {
   high: 1,
   medium: 2,
 };
+const FULL_SPINE = new Set<string>([...L3_TYPES, "episode"]);
 const EXPAND_OUTGOING = new Set([
   "affects",
   "constrains",
@@ -106,7 +108,7 @@ const constraintRank = (record: StoredMemoryRecord): number => {
 };
 
 const isRecentLesson = (record: StoredMemoryRecord, now: number): boolean => {
-  const raw = record.extra.valid_from;
+  const raw = record.validFrom ?? record.extra.valid_from;
   if (typeof raw === "number") {
     return now - raw <= LESSON_WINDOW_MS;
   }
@@ -161,6 +163,42 @@ export const validateExtra = (
         return fail("type_mismatch", `${key} must be one of ${values.join(", ")}`);
       }
     }
+  }
+  return Effect.void;
+};
+
+export const withEdgeDefaults = (edge: StoredMemoryEdge): StoredMemoryEdge => {
+  if (edge.verb === "depends_on" && edge.meta?.kind === undefined) {
+    return { ...edge, meta: { ...edge.meta, kind: "runtime" } };
+  }
+  if (edge.verb === "supersedes" && edge.meta?.reason === undefined) {
+    return { ...edge, meta: { ...edge.meta, reason: "" } };
+  }
+  return edge;
+};
+
+export const neighborIdsFromHits = (
+  edges: ReadonlyArray<StoredMemoryEdge>,
+  hitIds: ReadonlyArray<string>,
+): string[] => {
+  const hits = new Set(hitIds);
+  const neighbors = new Set<string>();
+  for (const edge of edges) {
+    if (hits.has(edge.from) && EXPAND_OUTGOING.has(edge.verb)) {
+      neighbors.add(edge.to);
+    } else if (hits.has(edge.to) && edge.verb === "supersedes") {
+      neighbors.add(edge.from);
+    }
+  }
+  for (const id of hits) {
+    neighbors.delete(id);
+  }
+  return [...neighbors];
+};
+
+export const assertReclassifyTarget = (toType: string) => {
+  if (!(EDGE_ENDS.promoted_to.out as readonly string[]).includes(toType)) {
+    return fail("type_mismatch", `promoted_to does not accept out type ${toType}`);
   }
   return Effect.void;
 };
@@ -230,12 +268,14 @@ export const buildRemember = Effect.fn("memory.buildRemember")(function* (
   const links: StoredMemoryEdge[] = [];
   for (const link of input.links ?? []) {
     yield* checkLinkTypes({ from: id, verb: link.verb, to: link.to });
-    links.push({
-      from: id,
-      verb: link.verb,
-      to: link.to,
-      ...(link.meta === undefined ? {} : { meta: link.meta }),
-    });
+    links.push(
+      withEdgeDefaults({
+        from: id,
+        verb: link.verb,
+        to: link.to,
+        ...(link.meta === undefined ? {} : { meta: link.meta }),
+      }),
+    );
   }
 
   const record: StoredMemoryRecord =
@@ -251,6 +291,7 @@ export const buildRemember = Effect.fn("memory.buildRemember")(function* (
           tags,
           extra,
           authoredBy: input.authoredBy ?? DEFAULT_AUTHOR,
+          ...(FULL_SPINE.has(input.type) ? { validFrom: new Date().toISOString() } : {}),
         }
       : {
           ...existing,
@@ -282,6 +323,7 @@ export const applyStatus = Effect.fn("memory.applyStatus")(function* (
     id: string;
     status: string;
     successor?: string;
+    reason?: string;
     confirm?: boolean;
   },
   record: StoredMemoryRecord | undefined,
@@ -307,11 +349,12 @@ export const applyStatus = Effect.fn("memory.applyStatus")(function* (
       return yield* fail("not_found", "successor does not exist");
     }
     yield* checkLinkTypes({ from: successorId, verb: "supersedes", to: input.id });
-    const successorEdge: StoredMemoryEdge = {
+    const successorEdge: StoredMemoryEdge = withEdgeDefaults({
       from: successorId,
       verb: "supersedes",
       to: input.id,
-    };
+      meta: { reason: input.reason ?? "" },
+    });
     return { record: { ...record, status: input.status }, successorEdge };
   }
   return { record: { ...record, status: input.status } };

@@ -7,6 +7,7 @@ import { parseRecordId } from "./ids.ts";
 import type { BootstrapInput, MemoryStore, RecallInput, RememberInput } from "./MemoryStore.ts";
 import {
   applyStatus,
+  assertReclassifyTarget,
   bootstrapFromStore,
   buildRemember,
   cardOf,
@@ -16,11 +17,13 @@ import {
   DEFAULT_RECALL_TYPES,
   fail,
   isMemoryToolError,
+  neighborIdsFromHits,
   parseId,
   planReclassifySource,
   recallFromStore,
   shouldAddEdge,
   validateRememberInput,
+  withEdgeDefaults,
 } from "./storeLogic.ts";
 import {
   EDGE_VERBS,
@@ -92,6 +95,16 @@ const extraKeys = (type: string): readonly string[] => {
   return [];
 };
 
+const datetimeString = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  return undefined;
+};
+
 const fromRow = (row: unknown): StoredMemoryRecord | undefined => {
   if (row === null || typeof row !== "object" || Array.isArray(row)) {
     return undefined;
@@ -113,9 +126,7 @@ const fromRow = (row: unknown): StoredMemoryRecord | undefined => {
       extra[key] = obj[key];
     }
   }
-  if (obj.valid_from !== undefined && extra.valid_from === undefined) {
-    extra.valid_from = obj.valid_from;
-  }
+  const validFrom = datetimeString(obj.valid_from);
   return {
     id,
     type: parsed.type,
@@ -127,6 +138,7 @@ const fromRow = (row: unknown): StoredMemoryRecord | undefined => {
     tags: asStringArray(obj.tags),
     extra,
     authoredBy: stringifyId(obj.authored_by) ?? DEFAULT_AUTHOR,
+    ...(validFrom === undefined ? {} : { validFrom }),
   };
 };
 
@@ -208,6 +220,9 @@ const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
     } catch {
       content.authored_by = new RecordId("agent", "harness");
     }
+    if (record.validFrom !== undefined) {
+      content.valid_from = record.validFrom;
+    }
   }
   Object.assign(content, record.extra);
   return content;
@@ -266,24 +281,25 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
   const persistEdge = Effect.fn("SurrealMemoryStore.persistEdge")(function* (
     edge: StoredMemoryEdge,
   ) {
-    if (!EDGE_VERB_SET.has(edge.verb)) {
+    const next = withEdgeDefaults(edge);
+    if (!EDGE_VERB_SET.has(next.verb)) {
       return yield* fail("unknown_verb");
     }
-    const existing = yield* run(`SELECT * FROM ${edge.verb} WHERE in = $from AND out = $to`, {
-      from: toRecordId(edge.from),
-      to: toRecordId(edge.to),
+    const existing = yield* run(`SELECT * FROM ${next.verb} WHERE in = $from AND out = $to`, {
+      from: toRecordId(next.from),
+      to: toRecordId(next.to),
     });
     const already = existing.flatMap((row) => {
       const parsed = fromEdgeRow(row);
       return parsed === undefined ? [] : [parsed];
     });
-    if (!shouldAddEdge(already, edge)) {
+    if (!shouldAddEdge(already, next)) {
       return;
     }
-    yield* run(`RELATE $from->${edge.verb}->$to CONTENT $meta`, {
-      from: toRecordId(edge.from),
-      to: toRecordId(edge.to),
-      meta: edge.meta ?? {},
+    yield* run(`RELATE $from->${next.verb}->$to CONTENT $meta`, {
+      from: toRecordId(next.from),
+      to: toRecordId(next.to),
+      meta: next.meta ?? {},
     });
   });
 
@@ -331,7 +347,8 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
   }) {
     yield* checkLinkTypes(input);
     const fromRecord = yield* loadRecord(input.from);
-    if (fromRecord === undefined) {
+    const toRecord = yield* loadRecord(input.to);
+    if (fromRecord === undefined || toRecord === undefined) {
       return yield* fail("not_found");
     }
     yield* persistEdge({
@@ -375,6 +392,7 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     confirm?: boolean;
   }) {
     const thought = yield* planReclassifySource(input.from, yield* loadRecord(input.from));
+    yield* assertReclassifyTarget(input.to_type);
     const created = yield* remember({
       type: input.to_type,
       slug: input.to_slug,
@@ -434,6 +452,28 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
       }
     }
     const edges = yield* loadAllEdges();
+    const loadedIds = new Set(records.map((record) => record.id));
+    const neighborIds = neighborIdsFromHits(
+      edges,
+      records.map((record) => record.id),
+    ).filter((id) => !loadedIds.has(id));
+    const neighborRecordIds: RecordId[] = [];
+    for (const id of neighborIds) {
+      try {
+        neighborRecordIds.push(toRecordId(id));
+      } catch {
+        continue;
+      }
+    }
+    if (neighborRecordIds.length > 0) {
+      const rows = yield* run("SELECT * FROM $ids", { ids: neighborRecordIds });
+      for (const row of rows) {
+        const parsed = fromRow(row);
+        if (parsed !== undefined) {
+          records.push(parsed);
+        }
+      }
+    }
     return recallFromStore(records, edges, input);
   });
 

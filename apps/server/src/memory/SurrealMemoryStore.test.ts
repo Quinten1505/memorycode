@@ -68,6 +68,9 @@ describe("SurrealMemoryStore", () => {
         expect(querySql(call)).not.toContain(slug);
       }
       expect(boundId(queryVars(upsert))).toEqual({ table: "decision", id: slug });
+      const content = queryVars(upsert)?.content as Record<string, unknown> | undefined;
+      expect(typeof content?.valid_from).toBe("string");
+      expect(Number.isNaN(Date.parse(String(content?.valid_from)))).toBe(false);
     }),
   );
 
@@ -81,6 +84,11 @@ describe("SurrealMemoryStore", () => {
         .remember({ type: "decision", slug, title: base.title, scope: [] })
         .pipe(Effect.flip);
       expect(missingScope.error).toBe("scope_required");
+      const missingExtra = yield* store
+        .remember({ type: "constraint", slug, title: base.title, scope: base.scope })
+        .pipe(Effect.flip);
+      expect(missingExtra.error).toBe("type_mismatch");
+      expect(missingExtra.hint).toContain("severity");
       expect(query).not.toHaveBeenCalled();
     }),
   );
@@ -193,6 +201,71 @@ describe("SurrealMemoryStore", () => {
         expect(sql).not.toContain(slug);
         expect(sql).not.toContain("uio-map");
       }
+    }),
+  );
+
+  it.effect("link to a missing record is not_found and does not RELATE", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async (sql: string, vars?: Record<string, unknown>) => {
+        if (sql.includes("SELECT") && sql.includes("ONLY")) {
+          const bound = boundId(vars);
+          if (bound.table === "decision" && bound.id === slug) {
+            return [decisionRow];
+          }
+          return [];
+        }
+        return [];
+      });
+      const store = makeSurrealMemoryStore(makeClient(query));
+      const err = yield* store
+        .link({
+          from: `decision:${slug}`,
+          verb: "affects",
+          to: "component:missing",
+        })
+        .pipe(Effect.flip);
+      expect(err.error).toBe("not_found");
+      expect(query.mock.calls.some((call) => querySql(call).includes("RELATE"))).toBe(false);
+    }),
+  );
+
+  it.effect("recall SELECTs one-hop neighbors that did not match FTS", () =>
+    Effect.gen(function* () {
+      const componentRow = {
+        id: { tb: "component", id: "pl-fabric" },
+        title: "PL fabric mapper",
+        status: "active",
+        scope: base.scope,
+        tags: [],
+        kind: "fpga",
+      };
+      const query = vi.fn(async (sql: string, vars?: Record<string, unknown>) => {
+        if (sql.includes("~")) {
+          return [{ ...decisionRow, status: "accepted" }];
+        }
+        if (Object.hasOwn(vars ?? {}, "ids")) {
+          return [componentRow];
+        }
+        if (sql.includes("FROM in_project") || sql.includes("affects")) {
+          return [
+            {
+              id: { tb: "affects", id: "1" },
+              in: { tb: "decision", id: slug },
+              out: { tb: "component", id: "pl-fabric" },
+            },
+          ];
+        }
+        return [];
+      });
+      const store = makeSurrealMemoryStore(makeClient(query));
+      const result = yield* store.recall({ query: "UIO registers", include_proposed: true });
+      expect(result.cards.map((card) => card.id)).toContain(`decision:${slug}`);
+      expect(result.cards.map((card) => card.id)).toContain("component:pl-fabric");
+      const neighborSelect = query.mock.calls.find((call) =>
+        Object.hasOwn(queryVars(call) ?? {}, "ids"),
+      );
+      expect(neighborSelect).toBeDefined();
+      expect(querySql(neighborSelect)).toContain("SELECT * FROM $ids");
     }),
   );
 });

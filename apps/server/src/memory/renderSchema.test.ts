@@ -133,6 +133,16 @@ describe("renderMemorySchema", () => {
     expect(sql).toContain("DEFINE DATABASE OVERWRITE memory");
   });
 
+  it("uses the configured namespace and database", () => {
+    const sql = renderMemorySchema({ embedDim: 1536, namespace: "team", database: "kb" });
+    expect(sql).toContain("DEFINE NAMESPACE OVERWRITE team");
+    expect(sql).toContain("USE NS team;");
+    expect(sql).toContain("DEFINE DATABASE OVERWRITE kb");
+    expect(sql).toContain("USE NS team DB kb");
+    expect(sql).not.toContain("DEFINE NAMESPACE OVERWRITE harness");
+    expect(sql).not.toContain("DEFINE DATABASE OVERWRITE memory");
+  });
+
   it("emits namespace, analyzer, tables, seeds, and indexes in order", () => {
     const sql = renderMemorySchema({ embedDim: 768 });
     const ns = sql.indexOf("DEFINE NAMESPACE OVERWRITE harness");

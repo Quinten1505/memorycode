@@ -195,10 +195,14 @@ const EDGE_EXTRA_SQL: Readonly<Record<string, Readonly<Record<string, string>>>>
 const TITLE_TYPE = "TYPE string ASSERT string::len($value) > 0 AND string::len($value) <= 200";
 const CONFIDENCE_TYPE = "TYPE float ASSERT $value >= 0 AND $value <= 1 DEFAULT 0.6";
 
-export function renderMemorySchema(opts: { embedDim: number }): string {
-  const { embedDim } = opts;
+export function renderMemorySchema(opts: {
+  embedDim: number;
+  namespace?: string;
+  database?: string;
+}): string {
+  const { embedDim, namespace = "harness", database = "memory" } = opts;
   return [
-    renderNamespace(),
+    renderNamespace(namespace, database),
     renderAnalyzer(),
     NODE_TABLES.map(renderNodeTable).join("\n\n"),
     renderSeeds(),
@@ -207,12 +211,12 @@ export function renderMemorySchema(opts: { embedDim: number }): string {
   ].join("\n\n");
 }
 
-function renderNamespace(): string {
+function renderNamespace(namespace: string, database: string): string {
   return [
-    "DEFINE NAMESPACE OVERWRITE harness;",
-    "USE NS harness;",
-    "DEFINE DATABASE OVERWRITE memory;",
-    "USE NS harness DB memory;",
+    `DEFINE NAMESPACE OVERWRITE ${namespace};`,
+    `USE NS ${namespace};`,
+    `DEFINE DATABASE OVERWRITE ${database};`,
+    `USE NS ${namespace} DB ${database};`,
   ].join("\n");
 }
 

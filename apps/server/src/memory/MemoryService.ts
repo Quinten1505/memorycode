@@ -39,7 +39,13 @@ const openStore = async (
     database: config.database,
     ...(authentication === undefined ? {} : { authentication }),
   });
-  const applied = db.query(renderMemorySchema({ embedDim: config.embedDim }));
+  const applied = db.query(
+    renderMemorySchema({
+      embedDim: config.embedDim,
+      namespace: config.namespace,
+      database: config.database,
+    }),
+  );
   if (
     applied !== null &&
     typeof applied === "object" &&
