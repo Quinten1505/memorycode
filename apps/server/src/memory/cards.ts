@@ -20,8 +20,71 @@ export type StoredMemoryEdge = {
   readonly meta?: Readonly<Record<string, unknown>>;
 };
 
+export const DEFAULT_RECALL_TOKEN_CAP = 3000;
+export const DEFAULT_BOOTSTRAP_TOKEN_CAP = 2000;
+
+const SENSITIVITY_PREFIX = "sensitivity:";
+const DEFAULT_SENSITIVITY = new Set(["normal", "work"]);
+
 export const estimateTokens = (card: MemoryCard): number =>
   Math.ceil(JSON.stringify(card).length / 4);
+
+export const estimateCardsTokens = (cards: ReadonlyArray<MemoryCard>): number =>
+  cards.reduce((sum, card) => sum + estimateTokens(card), 0);
+
+/** Keep cards in order while each added card still fits under `cap`. */
+export const takeUntilTokenCap = (cards: ReadonlyArray<MemoryCard>, cap: number): MemoryCard[] => {
+  const taken: MemoryCard[] = [];
+  let tokens = 0;
+  for (const card of cards) {
+    const next = estimateTokens(card);
+    if (tokens + next > cap) {
+      continue;
+    }
+    taken.push(card);
+    tokens += next;
+  }
+  return taken;
+};
+
+/** Case-insensitive substring hits over title+body; embeddings are ignored. */
+export const ftsHitCount = (query: string, title: string, body: string): number => {
+  const haystack = `${title} ${body}`.toLowerCase();
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 0);
+  let count = 0;
+  for (const term of terms) {
+    let from = 0;
+    while (from < haystack.length) {
+      const at = haystack.indexOf(term, from);
+      if (at === -1) {
+        break;
+      }
+      count += 1;
+      from = at + term.length;
+    }
+  }
+  return count;
+};
+
+/** Default allow normal/work and missing sensitivity; private only when noted. */
+export const sensitivityPasses = (
+  scope: ReadonlyArray<string>,
+  options: { allowPrivate?: boolean } = {},
+): boolean => {
+  const values = scope
+    .filter((token) => token.startsWith(SENSITIVITY_PREFIX))
+    .map((token) => token.slice(SENSITIVITY_PREFIX.length));
+  if (values.length === 0) {
+    return true;
+  }
+  if (values.includes("private")) {
+    return options.allowPrivate === true;
+  }
+  return values.some((value) => DEFAULT_SENSITIVITY.has(value));
+};
 
 export const toMemoryCard = (
   record: StoredMemoryRecord,

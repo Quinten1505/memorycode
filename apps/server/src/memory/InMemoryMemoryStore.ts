@@ -1,15 +1,35 @@
 import * as Effect from "effect/Effect";
 
-import { toMemoryCard, type StoredMemoryEdge, type StoredMemoryRecord } from "./cards.ts";
+import {
+  DEFAULT_BOOTSTRAP_TOKEN_CAP,
+  DEFAULT_RECALL_TOKEN_CAP,
+  estimateCardsTokens,
+  ftsHitCount,
+  sensitivityPasses,
+  takeUntilTokenCap,
+  toMemoryCard,
+  type StoredMemoryEdge,
+  type StoredMemoryRecord,
+} from "./cards.ts";
 import { MemoryToolError } from "./errors.ts";
 import { composeRecordId, parseRecordId } from "./ids.ts";
-import type { MemoryCard, MemoryStore, RememberInput } from "./MemoryStore.ts";
+import type {
+  BootstrapInput,
+  BootstrapResult,
+  MemoryCard,
+  MemoryStore,
+  RecallInput,
+  RememberInput,
+} from "./MemoryStore.ts";
+import { scopeMatches } from "./scope.ts";
 import { transitionFailure } from "./transitions.ts";
 import {
   DEFAULT_STATUS,
   EDGE_ENDS,
   EDGE_VERB_SET,
   EXTRA_FIELDS,
+  KNOWLEDGE_TYPES,
+  LIVE_STATUSES,
   REMEMBER_TYPE_SET,
   type EdgeVerb,
   type ExtraFieldSpec,
@@ -21,6 +41,25 @@ const DEFAULT_AUTHOR = "agent:harness";
 const IMMUTABLE_STATUSES = new Set(["accepted", "active", "asserted"]);
 const MULTI_EDGES = new Set(["mentions", "evidenced_by"]);
 const RECLASSIFY_FROM = new Set(["inbox", "clustered"]);
+const DEFAULT_RECALL_TYPES = new Set<string>([...KNOWLEDGE_TYPES, "thought"]);
+const DEFAULT_RECALL_K = 8;
+const MAX_RECALL_K = 20;
+const MAX_BOOTSTRAP_LESSONS = 5;
+const MAX_BOOTSTRAP_INBOX = 5;
+const LESSON_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+const SEVERITY_RANK: Readonly<Record<string, number>> = {
+  blocker: 0,
+  high: 1,
+  medium: 2,
+};
+const EXPAND_OUTGOING = new Set([
+  "affects",
+  "constrains",
+  "in_project",
+  "tagged",
+  "about",
+  "promoted_to",
+]);
 
 const fail = (error: MemoryToolError["error"], hint?: string) =>
   Effect.fail(new MemoryToolError(hint === undefined ? { error } : { error, hint }));
@@ -41,6 +80,46 @@ const composeId = (type: string, slug: string) =>
     catch: (cause) =>
       isMemoryToolError(cause) ? cause : new MemoryToolError({ error: "invalid_slug" }),
   });
+
+const liveStatuses = (type: string): ReadonlySet<string> => {
+  if (Object.hasOwn(LIVE_STATUSES, type)) {
+    return new Set(LIVE_STATUSES[type as keyof typeof LIVE_STATUSES]);
+  }
+  return new Set();
+};
+
+const isLiveRecord = (record: StoredMemoryRecord, includeProposed: boolean): boolean => {
+  if (!liveStatuses(record.type).has(record.status)) {
+    return false;
+  }
+  return includeProposed || record.status !== "proposed";
+};
+
+const byConfidenceDesc = (left: StoredMemoryRecord, right: StoredMemoryRecord) =>
+  right.confidence - left.confidence;
+
+const constraintRank = (record: StoredMemoryRecord): number => {
+  const severity = record.extra.severity;
+  if (typeof severity === "string" && Object.hasOwn(SEVERITY_RANK, severity)) {
+    return SEVERITY_RANK[severity] ?? 3;
+  }
+  return 3;
+};
+
+const isRecentLesson = (record: StoredMemoryRecord, now: number): boolean => {
+  const raw = record.extra.valid_from;
+  if (typeof raw === "number") {
+    return now - raw <= LESSON_WINDOW_MS;
+  }
+  if (typeof raw !== "string" || raw.length === 0) {
+    return true;
+  }
+  const from = Date.parse(raw);
+  if (Number.isNaN(from)) {
+    return true;
+  }
+  return now - from <= LESSON_WINDOW_MS;
+};
 
 const extraSpec = (type: string): ExtraFieldSpec | undefined => {
   if (Object.hasOwn(EXTRA_FIELDS, type)) {
@@ -301,13 +380,161 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
     return created;
   });
 
+  const expandOneHop = (hitIds: ReadonlyArray<string>, allowPrivate: boolean): MemoryCard[] => {
+    const seen = new Set(hitIds);
+    const neighbors: MemoryCard[] = [];
+    for (const hitId of hitIds) {
+      for (const edge of edges) {
+        const neighborId =
+          edge.from === hitId && EXPAND_OUTGOING.has(edge.verb)
+            ? edge.to
+            : edge.to === hitId && edge.verb === "supersedes"
+              ? edge.from
+              : undefined;
+        if (neighborId === undefined || seen.has(neighborId)) {
+          continue;
+        }
+        const record = records.get(neighborId);
+        if (record === undefined || !sensitivityPasses(record.scope, { allowPrivate })) {
+          continue;
+        }
+        seen.add(neighborId);
+        neighbors.push(cardOf(record));
+      }
+    }
+    return neighbors;
+  };
+
+  const recall = Effect.fn("InMemoryMemoryStore.recall")(function* (input: RecallInput) {
+    const types = input.types === undefined ? DEFAULT_RECALL_TYPES : new Set(input.types);
+    const k = Math.min(Math.max(input.k ?? DEFAULT_RECALL_K, 0), MAX_RECALL_K);
+    const includeProposed = input.include_proposed === true;
+    const project = input.project;
+    const projectRecord = project === undefined ? undefined : records.get(`project:${project}`);
+    const allowPrivate =
+      projectRecord !== undefined && projectRecord.scope.includes("sensitivity:private");
+    const ranked = [...records.values()]
+      .filter((record) => types.has(record.type))
+      .filter((record) => isLiveRecord(record, includeProposed))
+      .filter((record) => project === undefined || scopeMatches(record.scope, { project }))
+      .filter((record) => sensitivityPasses(record.scope, { allowPrivate }))
+      .map((record) => ({
+        record,
+        hits: ftsHitCount(input.query, record.title, record.body),
+      }))
+      .filter((entry) => entry.hits > 0)
+      .sort((left, right) => {
+        if (right.hits !== left.hits) {
+          return right.hits - left.hits;
+        }
+        return right.record.confidence - left.record.confidence;
+      })
+      .slice(0, k)
+      .map((entry) => cardOf(entry.record));
+    const expanded = [
+      ...ranked,
+      ...expandOneHop(
+        ranked.map((card) => card.id),
+        allowPrivate,
+      ),
+    ];
+    const cards = takeUntilTokenCap(expanded, DEFAULT_RECALL_TOKEN_CAP);
+    return { cards, tokens_est: estimateCardsTokens(cards) };
+  });
+
+  const bootstrap = Effect.fn("InMemoryMemoryStore.bootstrap")(function* (input: BootstrapInput) {
+    const cap = input.max_tokens ?? DEFAULT_BOOTSTRAP_TOKEN_CAP;
+    const projectRecord = records.get(`project:${input.project}`);
+    const allowPrivate =
+      projectRecord !== undefined && projectRecord.scope.includes("sensitivity:private");
+    const scoped = [...records.values()].filter(
+      (record) =>
+        isLiveRecord(record, true) &&
+        scopeMatches(record.scope, { project: input.project }) &&
+        sensitivityPasses(record.scope, { allowPrivate }),
+    );
+    const now = Date.now();
+    const projectCards =
+      projectRecord !== undefined &&
+      isLiveRecord(projectRecord, true) &&
+      sensitivityPasses(projectRecord.scope, { allowPrivate })
+        ? [cardOf(projectRecord)]
+        : [];
+    const constraints = scoped
+      .filter((record) => record.type === "constraint")
+      .sort((left, right) => {
+        const severity = constraintRank(left) - constraintRank(right);
+        return severity !== 0 ? severity : byConfidenceDesc(left, right);
+      })
+      .map(cardOf);
+    const conventions = scoped
+      .filter((record) => record.type === "convention")
+      .sort(byConfidenceDesc)
+      .map(cardOf);
+    const preferences = scoped
+      .filter((record) => record.type === "preference")
+      .sort(byConfidenceDesc)
+      .map(cardOf);
+    const openIncidents = scoped
+      .filter((record) => record.type === "incident")
+      .sort(byConfidenceDesc)
+      .map(cardOf);
+    const recentLessons = scoped
+      .filter((record) => record.type === "lesson" && isRecentLesson(record, now))
+      .sort(byConfidenceDesc)
+      .slice(0, MAX_BOOTSTRAP_LESSONS)
+      .map(cardOf);
+    const inbox =
+      input.include_inbox === true
+        ? scoped
+            .filter((record) => record.type === "thought")
+            .sort(byConfidenceDesc)
+            .slice(0, MAX_BOOTSTRAP_INBOX)
+            .map(cardOf)
+        : undefined;
+
+    const buckets: Array<{ cards: MemoryCard[] }> = [
+      { cards: recentLessons },
+      ...(inbox === undefined ? [] : [{ cards: inbox }]),
+      { cards: conventions },
+      { cards: preferences },
+      { cards: openIncidents },
+      { cards: constraints },
+      { cards: projectCards },
+    ];
+    const allCards = () => buckets.flatMap((bucket) => bucket.cards);
+    while (estimateCardsTokens(allCards()) > cap) {
+      const bucket = buckets.find((candidate) => candidate.cards.length > 0);
+      if (bucket === undefined) {
+        break;
+      }
+      bucket.cards.pop();
+    }
+
+    const result: BootstrapResult = {
+      constraints,
+      conventions,
+      preferences,
+      open_incidents: openIncidents,
+      recent_lessons: recentLessons,
+      tokens_est: estimateCardsTokens(allCards()),
+    };
+    const projectCard = projectCards[0];
+    if (projectCard !== undefined) {
+      return inbox === undefined
+        ? { ...result, project: projectCard }
+        : { ...result, project: projectCard, inbox };
+    }
+    return inbox === undefined ? result : { ...result, inbox };
+  });
+
   return {
     remember,
     get,
     status,
     link,
     reclassify,
-    recall: (_input) => fail("backend_unavailable"),
-    bootstrap: (_input) => fail("backend_unavailable"),
+    recall,
+    bootstrap,
   };
 };
