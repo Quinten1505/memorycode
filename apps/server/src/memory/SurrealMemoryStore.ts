@@ -13,6 +13,7 @@ import {
   checkLinkTypes,
   DEFAULT_AUTHOR,
   DEFAULT_CONFIDENCE,
+  DEFAULT_RECALL_TYPES,
   fail,
   isMemoryToolError,
   parseId,
@@ -38,7 +39,6 @@ export type MemorySurrealClient = {
 const FULL_SPINE = new Set<string>([...L3_TYPES, "episode"]);
 const HAS_BODY = new Set<string>([...FULL_SPINE, "component", "interface"]);
 const EDGE_TABLE_SQL = EDGE_VERBS.join(", ");
-const REMEMBER_TABLE_SQL = [...REMEMBER_TYPE_SET].join(", ");
 const BOOTSTRAP_TABLE_SQL =
   "project, constraint, convention, preference, incident, lesson, thought";
 
@@ -296,7 +296,11 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     const id = yield* validateRememberInput(input);
     const existing = yield* loadRecord(id);
     const { record, links } = yield* buildRemember(input, id, existing);
-    const rows = yield* run("UPSERT $id CONTENT $content RETURN AFTER", {
+    const writeSql =
+      existing === undefined
+        ? "UPSERT $id CONTENT $content RETURN AFTER"
+        : "UPDATE $id MERGE $content RETURN AFTER";
+    const rows = yield* run(writeSql, {
       id: toRecordId(id),
       content: toContent(record),
     });
@@ -398,21 +402,38 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
   const recall = Effect.fn("SurrealMemoryStore.recall")(function* (input: RecallInput) {
     const types =
       input.types === undefined
-        ? undefined
-        : input.types.filter((type) => REMEMBER_TYPE_SET.has(type as RememberType));
-    const tableSql =
-      types === undefined || types.length === 0 ? REMEMBER_TABLE_SQL : types.join(", ");
-    const records = yield* run(`SELECT * FROM ${tableSql} WHERE title ~ $q OR body ~ $q`, {
-      q: input.query,
-    }).pipe(
-      Effect.map((rows) =>
-        rows.flatMap((row) => {
-          const record = fromRow(row);
-          return record === undefined ? [] : [record];
-        }),
-      ),
-    );
-    const edges = yield* loadAllEdges;
+        ? [...DEFAULT_RECALL_TYPES]
+        : [...new Set(input.types.filter((type) => REMEMBER_TYPE_SET.has(type as RememberType)))];
+    if (types.length === 0) {
+      return { cards: [], tokens_est: 0 };
+    }
+    const withBody = types.filter((type) => HAS_BODY.has(type));
+    const titleOnly = types.filter((type) => !HAS_BODY.has(type));
+    const records: StoredMemoryRecord[] = [];
+    if (withBody.length > 0) {
+      const rows = yield* run(
+        `SELECT * FROM ${withBody.join(", ")} WHERE title ~ $q OR body ~ $q`,
+        { q: input.query },
+      );
+      for (const row of rows) {
+        const parsed = fromRow(row);
+        if (parsed !== undefined) {
+          records.push(parsed);
+        }
+      }
+    }
+    if (titleOnly.length > 0) {
+      const rows = yield* run(`SELECT * FROM ${titleOnly.join(", ")} WHERE title ~ $q`, {
+        q: input.query,
+      });
+      for (const row of rows) {
+        const parsed = fromRow(row);
+        if (parsed !== undefined) {
+          records.push(parsed);
+        }
+      }
+    }
+    const edges = yield* loadAllEdges();
     return recallFromStore(records, edges, input);
   });
 

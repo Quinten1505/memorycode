@@ -96,6 +96,73 @@ describe("SurrealMemoryStore", () => {
     }),
   );
 
+  it.effect("default recall searches knowledge+thought body tables, not title-only topology", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async () => []);
+      const store = makeSurrealMemoryStore(makeClient(query));
+      yield* store.recall({ query: "UIO registers" });
+      const select = query.mock.calls
+        .map((call) => querySql(call))
+        .find((sql) => sql.includes("SELECT") && sql.includes("~"));
+      expect(select).toBeDefined();
+      expect(select).toContain("decision");
+      expect(select).toContain("thought");
+      expect(select).toMatch(/title\s*~\s*\$q/);
+      expect(select).toMatch(/body\s*~\s*\$q/);
+      expect(select).not.toContain("project");
+      expect(select).not.toContain("repo");
+      expect(select).not.toContain("artifact");
+      expect(select).not.toContain("person");
+      expect(select).not.toContain("vendor");
+      expect(select).not.toContain("tool");
+      expect(select).not.toContain("symbol");
+    }),
+  );
+
+  it.effect("title-only topology recall does not predicate on body", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async () => []);
+      const store = makeSurrealMemoryStore(makeClient(query));
+      yield* store.recall({ query: "te0820", types: ["project", "decision"] });
+      const selects = query.mock.calls
+        .map((call) => querySql(call))
+        .filter((sql) => sql.includes("SELECT") && sql.includes("~"));
+      expect(selects.length).toBeGreaterThan(0);
+      const projectSql = selects.find((sql) => sql.includes("project"));
+      const decisionSql = selects.find((sql) => sql.includes("decision"));
+      expect(projectSql).toBeDefined();
+      expect(projectSql).toMatch(/title\s*~\s*\$q/);
+      expect(projectSql).not.toMatch(/body\s*~\s*\$q/);
+      expect(decisionSql).toBeDefined();
+      expect(decisionSql).toMatch(/body\s*~\s*\$q/);
+      for (const sql of selects) {
+        expect(sql).not.toContain("te0820");
+      }
+    }),
+  );
+
+  it.effect("second remember MERGEs and does not UPSERT CONTENT", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("ONLY")) {
+          return [decisionRow];
+        }
+        if (sql.includes("UPDATE") || sql.includes("MERGE")) {
+          return [decisionRow];
+        }
+        return [];
+      });
+      const store = makeSurrealMemoryStore(makeClient(query));
+      yield* store.remember({ type: "decision", ...base });
+      const writes = query.mock.calls.map((call) => querySql(call));
+      expect(writes.some((sql) => sql.includes("UPSERT") && sql.includes("CONTENT"))).toBe(false);
+      expect(writes.some((sql) => sql.includes("MERGE") || sql.includes("UPDATE"))).toBe(true);
+      for (const sql of writes) {
+        expect(sql).not.toContain(slug);
+      }
+    }),
+  );
+
   it.effect("link binds RecordIds and does not interpolate slugs", () =>
     Effect.gen(function* () {
       const query = vi.fn(async (sql: string) => {

@@ -64,7 +64,10 @@ const MemoryEnvConfig = Config.all({
   ),
   username: optionalText("SURREAL_USER"),
   password: optionalText("SURREAL_PASS"),
-  embedDim: Config.int("EMBED_DIM").pipe(Config.withDefault(DEFAULT_EMBED_DIM)),
+  embedDim: Config.string("EMBED_DIM").pipe(
+    Config.option,
+    Config.map((option) => parseEmbedDim(Option.getOrUndefined(option))),
+  ),
 });
 
 export class MemoryConfig extends Context.Service<MemoryConfig, MemoryConfigValue>()(

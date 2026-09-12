@@ -35,6 +35,11 @@ describe("MemoryConfig", () => {
   it("absent URL means unconfigured", () => {
     expect(decodeMemoryConfig({}).url).toBeUndefined();
   });
+
+  it("invalid EMBED_DIM defaults to 1536", () => {
+    expect(decodeMemoryConfig({ EMBED_DIM: "abc" }).embedDim).toBe(1536);
+    expect(decodeMemoryConfig({ EMBED_DIM: "-1" }).embedDim).toBe(1536);
+  });
 });
 
 describe("MemoryService unavailable fallback", () => {
@@ -118,6 +123,26 @@ describe("MemoryService unavailable fallback", () => {
 });
 
 describe("MemoryConfig.layer", () => {
+  it.effect("invalid EMBED_DIM does not fail the layer", () =>
+    Effect.gen(function* () {
+      const config = yield* MemoryConfig;
+      expect(config.url).toBe("ws://127.0.0.1:8000");
+      expect(config.embedDim).toBe(1536);
+    }).pipe(
+      Effect.provide(MemoryConfig.layer),
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              SURREAL_URL: "ws://127.0.0.1:8000",
+              EMBED_DIM: "abc",
+            },
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("reads the same defaults from env", () =>
     Effect.gen(function* () {
       const config = yield* MemoryConfig;
