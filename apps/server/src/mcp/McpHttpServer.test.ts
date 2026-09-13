@@ -16,6 +16,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerConfig from "../config.ts";
+import { MemoryService, unavailableStore } from "../memory/MemoryService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -60,6 +61,17 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
       }),
       Layer.mock(OrchestrationEngineService)({}),
       NodeServices.layer,
+    ),
+  ),
+);
+const MemoryTestLayer = McpHttpServer.MemoryToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.mock(ProjectionSnapshotQuery)({
+        getThreadShellById: () => Effect.succeed(Option.none()),
+      }),
+      Layer.succeed(MemoryService, MemoryService.of({ store: unavailableStore })),
     ),
   ),
 );
@@ -398,6 +410,24 @@ it.effect(
         { type: "text", text: "MCP credential does not grant the pull-requests capability." },
       ]);
     }).pipe(Effect.provide(PullRequestsTestLayer)),
+);
+
+it.effect("registers the memory toolkit tools", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const names = server.tools.map(({ tool }) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "memory_bootstrap",
+        "memory_recall",
+        "memory_get",
+        "memory_remember",
+        "memory_link",
+        "memory_status",
+        "memory_reclassify",
+      ]),
+    );
+  }).pipe(Effect.provide(MemoryTestLayer)),
 );
 
 it.effect("keeps the snapshot text under the agent's output ceiling", () =>

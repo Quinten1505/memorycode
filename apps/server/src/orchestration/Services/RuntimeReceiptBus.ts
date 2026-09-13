@@ -49,10 +49,20 @@ export const TurnProcessingQuiescedReceipt = Schema.Struct({
 });
 export type TurnProcessingQuiescedReceipt = typeof TurnProcessingQuiescedReceipt.Type;
 
+export const MemoryIngestCompletedReceipt = Schema.Struct({
+  type: Schema.Literal("memory.ingest.completed"),
+  threadId: ThreadId,
+  turnId: TurnId,
+  observationCount: Schema.Number,
+  promotedCount: Schema.Number,
+});
+export type MemoryIngestCompletedReceipt = typeof MemoryIngestCompletedReceipt.Type;
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,
+  MemoryIngestCompletedReceipt,
 ]);
 export type OrchestrationRuntimeReceipt = typeof OrchestrationRuntimeReceipt.Type;
 
