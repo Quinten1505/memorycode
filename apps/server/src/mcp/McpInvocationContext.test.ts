@@ -57,6 +57,13 @@ it.effect("reports other missing capabilities with the neutral error", () => {
     expect(error).toBeInstanceOf(McpCapabilityUnavailableError);
     expect(error).toMatchObject({ capability: "pull-requests", threadId: invocation.threadId });
 
+    const memoryError = yield* McpInvocationContext.requireMcpCapability("memory").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.flip,
+    );
+    expect(memoryError).toBeInstanceOf(McpCapabilityUnavailableError);
+    expect(memoryError).toMatchObject({ capability: "memory", threadId: invocation.threadId });
+
     const scope = yield* McpInvocationContext.requireMcpCapability("preview").pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
     );
