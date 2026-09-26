@@ -4,8 +4,11 @@ import {
   EDGE_VERBS,
   EXTRA_FIELDS,
   L3_TYPES,
+  MAP_EXTRA_FIELDS,
   type EdgeVerb,
 } from "./vocabulary.ts";
+
+export const MEMORY_SCHEMA_VERSION = 2;
 
 const NODE_TABLES = [
   "provider",
@@ -33,6 +36,8 @@ const NODE_TABLES = [
   "tool",
   "observation",
   "episode",
+  "work_map",
+  "question",
 ] as const;
 
 const PROVIDERS = [
@@ -62,10 +67,17 @@ const INDEXED_TABLES = [
   "interface",
   "episode",
   "observation",
+  "work_map",
+  "question",
 ] as const;
 
 const INDEXED_TABLE_SET: ReadonlySet<string> = new Set(INDEXED_TABLES);
-const FULL_SPINE_SET: ReadonlySet<string> = new Set([...L3_TYPES, "episode"]);
+const FULL_SPINE_SET: ReadonlySet<string> = new Set([
+  ...L3_TYPES,
+  "episode",
+  "work_map",
+  "question",
+]);
 
 const STATUS_ENUMS: Readonly<Record<string, readonly string[]>> = {
   decision: ["proposed", "accepted", "superseded", "rejected"],
@@ -80,6 +92,8 @@ const STATUS_ENUMS: Readonly<Record<string, readonly string[]>> = {
   thought: ["inbox", "clustered", "promoted", "discarded"],
   schema_proposal: ["proposed", "accepted", "rejected", "shipped"],
   episode: ["open", "closed"],
+  work_map: ["open", "closed"],
+  question: ["open"],
   project: ["active", "archived"],
   repo: ["active", "archived"],
   component: ["active", "archived"],
@@ -163,6 +177,25 @@ const EXTRA_SQL: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     started_at: "TYPE option<datetime>",
     ended_at: "TYPE option<datetime>",
   },
+  work_map: {
+    destination: "TYPE string",
+    notes: `TYPE string DEFAULT ""`,
+    revision: "TYPE int DEFAULT 0",
+    environment_id: "TYPE string",
+    repository_key: `TYPE string DEFAULT ""`,
+    workspace_key: "TYPE string",
+    primary_workspace_key: "TYPE string",
+    source_thread_id: "TYPE string",
+    source_turn_id: `TYPE string DEFAULT ""`,
+    user_slug: "TYPE string",
+  },
+  question: {
+    wording: "TYPE string",
+    context: `TYPE string DEFAULT ""`,
+    options: "TYPE array<object> FLEXIBLE",
+    user_slug: "TYPE string",
+    map_id: "TYPE string",
+  },
   agent: {
     kind: `TYPE string ASSERT $value IN ["human", "harness", "extractor", "promoter"]`,
     provider: "TYPE option<record<provider>>",
@@ -190,6 +223,16 @@ const EDGE_EXTRA_SQL: Readonly<Record<string, Readonly<Record<string, string>>>>
   uses_tool: { version: "TYPE option<string>" },
   owned_by: { role: "TYPE option<string>" },
   mentions: { quote: "TYPE option<string>" },
+  contains: {
+    role: `TYPE string ASSERT $value IN ["question", "fog", "exclusion"]`,
+    reason: "TYPE option<string>",
+    ord: "TYPE int DEFAULT 0",
+    slug: "TYPE string",
+  },
+  worktree_of: {
+    workspace_key: "TYPE option<string>",
+    repository_key: "TYPE option<string>",
+  },
 };
 
 const TITLE_TYPE = "TYPE string ASSERT string::len($value) > 0 AND string::len($value) <= 200";
@@ -208,6 +251,33 @@ export function renderMemorySchema(opts: {
     renderSeeds(),
     EDGE_VERBS.map(renderEdgeTable).join("\n\n"),
     renderIndexes(embedDim),
+    renderMapSupportTables(),
+  ].join("\n\n");
+}
+
+/**
+ * Version 2 of an existing database: add Wayfinder tables and edges.
+ * Existing node definitions are left untouched.
+ */
+export function renderWayfinderMigration(opts: {
+  embedDim: number;
+  namespace?: string;
+  database?: string;
+}): string {
+  const { embedDim, namespace = "harness", database = "memory" } = opts;
+  const body = [
+    renderNodeTable("work_map"),
+    renderNodeTable("question"),
+    renderEdgeTable("contains"),
+    renderEdgeTable("worktree_of"),
+    renderMapSupportTables(),
+    renderIndexesFor(["work_map", "question"], embedDim),
+    `UPSERT memory_schema:current SET version = ${MEMORY_SCHEMA_VERSION};`,
+  ].join("\n\n");
+  return [
+    `USE NS ${namespace};`,
+    `USE NS ${namespace} DB ${database};`,
+    body.replaceAll(" OVERWRITE", " IF NOT EXISTS"),
   ].join("\n\n");
 }
 
@@ -301,7 +371,9 @@ function spineFields(table: string, kind: "full" | "topology"): string[] {
 
 function extraFields(table: string): string[] {
   const extras = EXTRA_SQL[table] ?? {};
-  const vocab = EXTRA_FIELDS[table as keyof typeof EXTRA_FIELDS];
+  const vocab =
+    EXTRA_FIELDS[table as keyof typeof EXTRA_FIELDS] ??
+    MAP_EXTRA_FIELDS[table as keyof typeof MAP_EXTRA_FIELDS];
   if (vocab !== undefined) {
     for (const key of vocab.keys) {
       if (extras[key] === undefined) {
@@ -342,9 +414,27 @@ function renderEdgeTable(verb: EdgeVerb): string {
   return statements.join("\n");
 }
 
+function renderMapSupportTables(): string {
+  return [
+    "DEFINE TABLE OVERWRITE memory_schema SCHEMALESS;",
+    "DEFINE TABLE OVERWRITE map_apply SCHEMALESS;",
+    "DEFINE FIELD OVERWRITE idempotency_key ON map_apply TYPE string;",
+    "DEFINE FIELD OVERWRITE result ON map_apply TYPE option<object> FLEXIBLE;",
+    "DEFINE INDEX OVERWRITE map_apply_key ON map_apply FIELDS idempotency_key UNIQUE;",
+  ].join("\n");
+}
+
 function renderIndexes(embedDim: number): string {
+  return [
+    renderIndexesFor(INDEXED_TABLES, embedDim),
+    "DEFINE INDEX OVERWRITE idx_facet ON thought FIELDS facet;",
+    "DEFINE INDEX OVERWRITE idx_full_name ON repo FIELDS full_name UNIQUE;",
+  ].join("\n");
+}
+
+function renderIndexesFor(tables: readonly string[], embedDim: number): string {
   const statements: string[] = [];
-  for (const table of INDEXED_TABLES) {
+  for (const table of tables) {
     statements.push(
       `DEFINE INDEX OVERWRITE idx_body_fts ON ${table} FIELDS body FULLTEXT ANALYZER memory_en BM25 HIGHLIGHTS;`,
     );
@@ -358,8 +448,6 @@ function renderIndexes(embedDim: number): string {
     statements.push(`DEFINE INDEX OVERWRITE idx_status ON ${table} FIELDS status;`);
     statements.push(`DEFINE INDEX OVERWRITE idx_tags ON ${table} FIELDS tags;`);
   }
-  statements.push("DEFINE INDEX OVERWRITE idx_facet ON thought FIELDS facet;");
-  statements.push("DEFINE INDEX OVERWRITE idx_full_name ON repo FIELDS full_name UNIQUE;");
   return statements.join("\n");
 }
 
@@ -370,6 +458,9 @@ function statusField(table: string, values: readonly string[], fallback?: string
 }
 
 function defaultStatus(table: string): string | undefined {
+  if (table === "work_map" || table === "question") {
+    return "open";
+  }
   if (table in DEFAULT_STATUS) {
     return DEFAULT_STATUS[table as keyof typeof DEFAULT_STATUS];
   }

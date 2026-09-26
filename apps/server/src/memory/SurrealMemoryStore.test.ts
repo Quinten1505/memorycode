@@ -72,6 +72,25 @@ describe("SurrealMemoryStore", () => {
       expect(content?.scope).toBeInstanceOf(Set);
       expect([...(content?.scope as Set<string>)]).toEqual(base.scope);
       expect(content?.valid_from).toBeInstanceOf(Date);
+      expect(content?.embedding).toBeUndefined();
+    }),
+  );
+
+  it.effect("remember writes an embedding when the embedder returns the right width", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async (sql: string) => {
+        if (sql.includes("UPSERT") || sql.includes("MERGE")) {
+          return [decisionRow];
+        }
+        return [];
+      });
+      const store = makeSurrealMemoryStore(makeClient(query), {
+        embed: async () => [0.1, 0.2, 0.3],
+      });
+      yield* store.remember({ type: "decision", ...base });
+      const upsert = query.mock.calls.find((call) => querySql(call).includes("UPSERT"));
+      const content = queryVars(upsert)?.content as Record<string, unknown> | undefined;
+      expect(content?.embedding).toEqual([0.1, 0.2, 0.3]);
     }),
   );
 
@@ -146,6 +165,25 @@ describe("SurrealMemoryStore", () => {
       expect(select).not.toContain("vendor");
       expect(select).not.toContain("tool");
       expect(select).not.toContain("symbol");
+    }),
+  );
+
+  it.effect("recall issues an HNSW KNN query when the query embeds", () =>
+    Effect.gen(function* () {
+      const query = vi.fn(async () => []);
+      const store = makeSurrealMemoryStore(makeClient(query), {
+        embed: async () => [0.1, 0.2, 0.3],
+      });
+      yield* store.recall({ query: "UIO registers", k: 8 });
+      const knn = query.mock.calls
+        .map((call) => querySql(call))
+        .find((sql) => sql.includes("<|8,40|>"));
+      expect(knn).toBeDefined();
+      expect(knn).toContain("vector::similarity::cosine");
+      const knnVars = queryVars(
+        query.mock.calls.find((call) => querySql(call).includes("<|8,40|>")),
+      );
+      expect(knnVars?.vec).toEqual([0.1, 0.2, 0.3]);
     }),
   );
 

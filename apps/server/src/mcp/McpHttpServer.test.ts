@@ -425,6 +425,8 @@ it.effect("registers the memory toolkit tools", () =>
         "memory_link",
         "memory_status",
         "memory_reclassify",
+        "memory_map_apply",
+        "memory_map_get",
       ]),
     );
   }).pipe(Effect.provide(MemoryTestLayer)),

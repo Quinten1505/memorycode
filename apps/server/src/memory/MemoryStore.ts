@@ -70,6 +70,111 @@ export interface IngestTurnResult {
   readonly promotedIds: ReadonlyArray<string>;
 }
 
+export interface MapIdentity {
+  readonly environmentId: string;
+  readonly repositoryKey: string | null;
+  readonly workspaceKey: string;
+  readonly primaryWorkspaceKey: string;
+  readonly threadId: string;
+  readonly turnId: string | null;
+}
+
+export interface MapOption {
+  readonly label: string;
+  readonly context: string;
+}
+
+export interface MapApplyInput {
+  readonly idempotencyKey: string;
+  readonly expectedRevision: number;
+  readonly slug: string;
+  readonly title: string;
+  readonly destination: string;
+  readonly notes: string;
+  readonly identity: MapIdentity;
+  readonly questions: ReadonlyArray<{
+    readonly slug: string;
+    readonly title: string;
+    readonly wording: string;
+    readonly context: string;
+    readonly options: ReadonlyArray<MapOption>;
+  }>;
+  readonly fog: ReadonlyArray<{
+    readonly slug: string;
+    readonly title: string;
+    readonly body: string;
+  }>;
+  readonly exclusions: ReadonlyArray<{
+    readonly slug: string;
+    readonly title: string;
+    readonly body: string;
+    readonly reason: string;
+  }>;
+}
+
+export interface MapNodeRef {
+  readonly slug: string;
+  readonly id: string;
+}
+
+export interface MapApplyResult {
+  readonly mapId: string;
+  readonly revision: number;
+  readonly workspaceProjectId: string;
+  readonly primaryProjectId: string;
+  readonly worktreeOf: string | null;
+  readonly questions: ReadonlyArray<MapNodeRef>;
+  readonly fog: ReadonlyArray<MapNodeRef>;
+  readonly exclusions: ReadonlyArray<MapNodeRef>;
+}
+
+export interface MapReadInput {
+  readonly identity: MapIdentity;
+  readonly view: "overview" | "full";
+  readonly id?: string;
+  readonly slug?: string;
+}
+
+export interface MapReadResult {
+  readonly view: "overview" | "full";
+  readonly map: {
+    readonly id: string;
+    readonly title: string;
+    readonly destination: string;
+    readonly revision: number;
+    readonly notes?: string;
+  };
+  readonly provenance: {
+    readonly environmentId: string;
+    readonly repositoryKey: string | null;
+    readonly workspaceKey: string;
+    readonly primaryWorkspaceKey: string;
+    readonly sourceThreadId: string;
+    readonly sourceTurnId: string | null;
+  };
+  readonly questions: ReadonlyArray<{
+    readonly id: string;
+    readonly slug: string;
+    readonly title: string;
+    readonly wording?: string;
+    readonly context?: string;
+    readonly options?: ReadonlyArray<MapOption>;
+  }>;
+  readonly fog: ReadonlyArray<{
+    readonly id: string;
+    readonly slug: string;
+    readonly title: string;
+    readonly body?: string;
+  }>;
+  readonly exclusions: ReadonlyArray<{
+    readonly id: string;
+    readonly slug: string;
+    readonly title: string;
+    readonly reason: string;
+    readonly body?: string;
+  }>;
+}
+
 export interface BootstrapResult {
   readonly project?: MemoryCard;
   readonly constraints: ReadonlyArray<MemoryCard>;
@@ -112,4 +217,6 @@ export interface MemoryStore {
   ) => Effect.Effect<{ cards: MemoryCard[]; tokens_est: number }, MemoryToolError>;
   readonly bootstrap: (input: BootstrapInput) => Effect.Effect<BootstrapResult, MemoryToolError>;
   readonly ingestTurn: (input: IngestTurnInput) => Effect.Effect<IngestTurnResult, MemoryToolError>;
+  readonly applyMap: (input: MapApplyInput) => Effect.Effect<MapApplyResult, MemoryToolError>;
+  readonly readMap: (input: MapReadInput) => Effect.Effect<MapReadResult, MemoryToolError>;
 }

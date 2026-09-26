@@ -28,9 +28,12 @@ describe("MemoryConfig", () => {
       database: "memory",
       username: "root",
       password: "root",
-      embedDim: 1536,
+      embedDim: 4096,
       autostart: true,
       dataDir: undefined,
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3-embedding:8b-q4_K_M",
+      ollamaAutostart: true,
     });
   });
 
@@ -40,9 +43,17 @@ describe("MemoryConfig", () => {
     expect(decodeMemoryConfig({ SURREAL_AUTOSTART: "0" }).autostart).toBe(false);
   });
 
-  it("invalid EMBED_DIM defaults to 1536", () => {
-    expect(decodeMemoryConfig({ EMBED_DIM: "abc" }).embedDim).toBe(1536);
-    expect(decodeMemoryConfig({ EMBED_DIM: "-1" }).embedDim).toBe(1536);
+  it("invalid EMBED_DIM defaults to 4096", () => {
+    expect(decodeMemoryConfig({ EMBED_DIM: "abc" }).embedDim).toBe(4096);
+    expect(decodeMemoryConfig({ EMBED_DIM: "-1" }).embedDim).toBe(4096);
+  });
+
+  it("defaults Ollama to local qwen3-embedding 8B", () => {
+    const config = decodeMemoryConfig({});
+    expect(config.ollamaUrl).toBe("http://127.0.0.1:11434");
+    expect(config.ollamaModel).toBe("qwen3-embedding:8b-q4_K_M");
+    expect(config.ollamaAutostart).toBe(true);
+    expect(config.embedDim).toBe(4096);
   });
 });
 
@@ -70,8 +81,43 @@ describe("MemoryService unavailable fallback", () => {
             messages: [],
           })
           .pipe(Effect.flip),
+        yield* unavailableStore
+          .applyMap({
+            idempotencyKey: "once",
+            expectedRevision: 0,
+            slug: "map",
+            title: "Map",
+            destination: "A destination",
+            notes: "",
+            identity: {
+              environmentId: "env",
+              repositoryKey: null,
+              workspaceKey: "/work/app",
+              primaryWorkspaceKey: "/work/app",
+              threadId: "thread-x",
+              turnId: null,
+            },
+            questions: [],
+            fog: [],
+            exclusions: [],
+          })
+          .pipe(Effect.flip),
+        yield* unavailableStore
+          .readMap({
+            view: "overview",
+            slug: "map",
+            identity: {
+              environmentId: "env",
+              repositoryKey: null,
+              workspaceKey: "/work/app",
+              primaryWorkspaceKey: "/work/app",
+              threadId: "thread-x",
+              turnId: null,
+            },
+          })
+          .pipe(Effect.flip),
       ];
-      expect(errors.map((error) => error.error)).toEqual(Array(8).fill("backend_unavailable"));
+      expect(errors.map((error) => error.error)).toEqual(Array(10).fill("backend_unavailable"));
     }),
   );
 
@@ -93,9 +139,12 @@ describe("MemoryService unavailable fallback", () => {
             database: "memory",
             username: undefined,
             password: undefined,
-            embedDim: 1536,
+            embedDim: 4096,
             autostart: false,
             dataDir: undefined,
+            ollamaUrl: "http://127.0.0.1:11434",
+            ollamaModel: "qwen3-embedding:8b-q4_K_M",
+            ollamaAutostart: false,
           }),
         ),
       ),
@@ -134,9 +183,54 @@ describe("MemoryService unavailable fallback", () => {
             database: "memory",
             username: undefined,
             password: undefined,
-            embedDim: 1536,
+            embedDim: 4096,
             autostart: true,
             dataDir: undefined,
+            ollamaUrl: "http://127.0.0.1:11434",
+            ollamaModel: "qwen3-embedding:8b-q4_K_M",
+            ollamaAutostart: false,
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("autostart starts local Ollama with the embedding model", () => {
+    const ensure = vi.fn(async () => "already-running");
+    const ensureOllama = vi.fn(async () => "started");
+    const connect = vi.fn(async () => undefined);
+    const query = vi.fn(async () => []);
+    return Effect.gen(function* () {
+      yield* MemoryService;
+      expect(ensureOllama).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://127.0.0.1:11434",
+          model: "qwen3-embedding:8b-q4_K_M",
+          dimensions: 4096,
+        }),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.effect(
+          MemoryService,
+          make(() => ({ connect, query }), ensure, { ensureOllama }),
+        ),
+      ),
+      Effect.provide(
+        Layer.succeed(
+          MemoryConfig,
+          MemoryConfig.of({
+            url: "ws://127.0.0.1:8000",
+            namespace: "harness",
+            database: "memory",
+            username: "root",
+            password: "root",
+            embedDim: 4096,
+            autostart: false,
+            dataDir: undefined,
+            ollamaUrl: "http://127.0.0.1:11434",
+            ollamaModel: "qwen3-embedding:8b-q4_K_M",
+            ollamaAutostart: true,
           }),
         ),
       ),
@@ -170,9 +264,12 @@ describe("MemoryService unavailable fallback", () => {
             database: "memory",
             username: "root",
             password: "root",
-            embedDim: 1536,
+            embedDim: 4096,
             autostart: false,
             dataDir: undefined,
+            ollamaUrl: "http://127.0.0.1:11434",
+            ollamaModel: "qwen3-embedding:8b-q4_K_M",
+            ollamaAutostart: false,
           }),
         ),
       ),
@@ -185,7 +282,7 @@ describe("MemoryConfig.layer", () => {
     Effect.gen(function* () {
       const config = yield* MemoryConfig;
       expect(config.url).toBe("ws://127.0.0.1:8000");
-      expect(config.embedDim).toBe(1536);
+      expect(config.embedDim).toBe(4096);
     }).pipe(
       Effect.provide(MemoryConfig.layer),
       Effect.provide(
@@ -210,9 +307,12 @@ describe("MemoryConfig.layer", () => {
         database: "memory",
         username: "root",
         password: "root",
-        embedDim: 1536,
+        embedDim: 4096,
         autostart: true,
         dataDir: undefined,
+        ollamaUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3-embedding:8b-q4_K_M",
+        ollamaAutostart: true,
       });
     }).pipe(
       Effect.provide(MemoryConfig.layer),

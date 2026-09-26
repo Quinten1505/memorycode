@@ -4,9 +4,22 @@ import { RecordId } from "surrealdb";
 import type { StoredMemoryEdge, StoredMemoryRecord } from "./cards.ts";
 import { MemoryToolError } from "./errors.ts";
 import { parseRecordId } from "./ids.ts";
+import type { MemoryEmbedder } from "./ollamaEmbed.ts";
+import {
+  findMap,
+  mapStorageId,
+  planMapApply,
+  presentMap,
+  receiptIdFor,
+  workspaceProjectId,
+  type MapCommit,
+  type MapReceipt,
+} from "./mapApply.ts";
 import type {
   BootstrapInput,
   IngestTurnInput,
+  MapApplyInput,
+  MapReadInput,
   MemoryStore,
   RecallInput,
   RememberInput,
@@ -21,7 +34,9 @@ import {
   checkLinkTypes,
   DEFAULT_AUTHOR,
   DEFAULT_CONFIDENCE,
+  DEFAULT_RECALL_K,
   DEFAULT_RECALL_TYPES,
+  MAX_RECALL_K,
   fail,
   isMemoryToolError,
   neighborIdsFromHits,
@@ -37,6 +52,7 @@ import {
   EDGE_VERB_SET,
   EXTRA_FIELDS,
   L3_TYPES,
+  MAP_EXTRA_FIELDS,
   REMEMBER_TYPE_SET,
   type RememberType,
 } from "./vocabulary.ts";
@@ -46,7 +62,7 @@ export type MemorySurrealClient = {
   readonly query: (sql: string, vars?: Record<string, unknown>) => unknown;
 };
 
-const FULL_SPINE = new Set<string>([...L3_TYPES, "episode"]);
+const FULL_SPINE = new Set<string>([...L3_TYPES, "episode", "work_map", "question"]);
 const HAS_BODY = new Set<string>([...FULL_SPINE, "component", "interface", "observation"]);
 const EDGE_TABLE_SQL = EDGE_VERBS.join(", ");
 const BOOTSTRAP_TABLE_SQL =
@@ -101,6 +117,9 @@ const asStringArray = (value: unknown): string[] => {
 const extraKeys = (type: string): readonly string[] => {
   if (Object.hasOwn(EXTRA_FIELDS, type)) {
     return EXTRA_FIELDS[type as keyof typeof EXTRA_FIELDS].keys;
+  }
+  if (Object.hasOwn(MAP_EXTRA_FIELDS, type)) {
+    return MAP_EXTRA_FIELDS[type as keyof typeof MAP_EXTRA_FIELDS].keys;
   }
   return [];
 };
@@ -212,7 +231,10 @@ const toRecordId = (id: string): RecordId => {
   return new RecordId(parsed.type, parsed.slug);
 };
 
-const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
+const toContent = (
+  record: StoredMemoryRecord,
+  embedding?: ReadonlyArray<number>,
+): Record<string, unknown> => {
   const content: Record<string, unknown> = {
     title: record.title,
     status: record.status,
@@ -221,6 +243,9 @@ const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
   };
   if (HAS_BODY.has(record.type)) {
     content.body = record.body;
+  }
+  if (embedding !== undefined && embedding.length > 0) {
+    content.embedding = [...embedding];
   }
   if (FULL_SPINE.has(record.type)) {
     content.confidence = record.confidence;
@@ -242,7 +267,12 @@ const toContent = (record: StoredMemoryRecord): Record<string, unknown> => {
 const backendUnavailable = (cause: unknown): MemoryToolError =>
   isMemoryToolError(cause) ? cause : new MemoryToolError({ error: "backend_unavailable" });
 
-export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore => {
+const embedText = (title: string, body: string): string => `${title}\n${body}`.trim();
+
+export const makeSurrealMemoryStore = (
+  client: MemorySurrealClient,
+  embedder?: MemoryEmbedder,
+): MemoryStore => {
   const run = Effect.fn("SurrealMemoryStore.query")(function* (
     sql: string,
     vars?: Record<string, unknown>,
@@ -319,14 +349,23 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     return cardOf(record, edges);
   });
 
+  const tryEmbed = (text: string) =>
+    Effect.tryPromise({
+      try: () => (embedder === undefined ? Promise.resolve(undefined) : embedder.embed(text)),
+      catch: () => undefined,
+    }).pipe(Effect.orElseSucceed(() => undefined));
+
   const remember = Effect.fn("SurrealMemoryStore.remember")(function* (input: RememberInput) {
     const id = yield* validateRememberInput(input);
     const existing = yield* loadRecord(id);
     const { record, links } = yield* buildRemember(input, id, existing);
+    const embedding = HAS_BODY.has(record.type)
+      ? yield* tryEmbed(embedText(record.title, record.body))
+      : undefined;
     const writeSql = "UPSERT $id MERGE $content RETURN AFTER";
     const rows = yield* run(writeSql, {
       id: toRecordId(id),
-      content: toContent(record),
+      content: toContent(record, embedding),
     });
     for (const link of links) {
       yield* persistEdge(link);
@@ -425,6 +464,15 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     });
   });
 
+  const pushRows = (records: StoredMemoryRecord[], rows: unknown[]) => {
+    for (const row of rows) {
+      const parsed = fromRow(row);
+      if (parsed !== undefined) {
+        records.push(parsed);
+      }
+    }
+  };
+
   const recall = Effect.fn("SurrealMemoryStore.recall")(function* (input: RecallInput) {
     const types =
       input.types === undefined
@@ -441,20 +489,38 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
         `SELECT * FROM ${withBody.join(", ")} WHERE title ~ $q OR body ~ $q`,
         { q: input.query },
       );
-      for (const row of rows) {
-        const parsed = fromRow(row);
-        if (parsed !== undefined) {
-          records.push(parsed);
-        }
-      }
+      pushRows(records, rows);
     }
     if (titleOnly.length > 0) {
       const rows = yield* run(`SELECT * FROM ${titleOnly.join(", ")} WHERE title ~ $q`, {
         q: input.query,
       });
-      for (const row of rows) {
+      pushRows(records, rows);
+    }
+    const k = Math.min(Math.max(input.k ?? DEFAULT_RECALL_K, 1), MAX_RECALL_K);
+    const queryVector = yield* tryEmbed(input.query);
+    const vectorScores = new Map<string, number>();
+    if (queryVector !== undefined && withBody.length > 0) {
+      const knnRows = yield* run(
+        `SELECT *, vector::similarity::cosine(embedding, $vec) AS vector_score FROM ${withBody.join(", ")} WHERE embedding <|${k},40|> $vec`,
+        { vec: [...queryVector] },
+      ).pipe(Effect.orElseSucceed(() => [] as unknown[]));
+      let rank = knnRows.length;
+      for (const row of knnRows) {
         const parsed = fromRow(row);
-        if (parsed !== undefined) {
+        if (parsed === undefined) {
+          continue;
+        }
+        const score =
+          row !== null && typeof row === "object" && !Array.isArray(row)
+            ? (row as { vector_score?: unknown }).vector_score
+            : undefined;
+        vectorScores.set(
+          parsed.id,
+          typeof score === "number" ? score : rank / Math.max(knnRows.length, 1),
+        );
+        rank -= 1;
+        if (!records.some((record) => record.id === parsed.id)) {
           records.push(parsed);
         }
       }
@@ -475,19 +541,165 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     }
     if (neighborRecordIds.length > 0) {
       const rows = yield* run("SELECT * FROM $ids", { ids: neighborRecordIds });
-      for (const row of rows) {
-        const parsed = fromRow(row);
-        if (parsed !== undefined) {
-          records.push(parsed);
-        }
-      }
+      pushRows(records, rows);
     }
-    return recallFromStore(records, edges, input);
+    return recallFromStore(
+      records,
+      edges,
+      input,
+      vectorScores.size === 0 ? undefined : vectorScores,
+    );
   });
 
   const bootstrap = Effect.fn("SurrealMemoryStore.bootstrap")(function* (input: BootstrapInput) {
     const records = yield* loadTyped(`SELECT * FROM ${BOOTSTRAP_TABLE_SQL}`);
     return bootstrapFromStore(records, input);
+  });
+
+  const loadContains = Effect.fn("SurrealMemoryStore.loadContains")(function* (id: string) {
+    const rows = yield* run("SELECT * FROM contains WHERE in = $id", { id: toRecordId(id) });
+    return rows.flatMap((row) => {
+      const edge = fromEdgeRow(row);
+      return edge === undefined ? [] : [edge];
+    });
+  });
+
+  const loadWorktreeEdges = Effect.fn("SurrealMemoryStore.loadWorktreeEdges")(function* (
+    id: string,
+  ) {
+    const rows = yield* run("SELECT * FROM worktree_of WHERE in = $id", { id: toRecordId(id) });
+    return rows.flatMap((row) => {
+      const edge = fromEdgeRow(row);
+      return edge === undefined ? [] : [edge];
+    });
+  });
+
+  const loadReceipt = Effect.fn("SurrealMemoryStore.loadReceipt")(function* (id: string) {
+    const rows = yield* run("SELECT * FROM ONLY $id", { id: toRecordId(id) });
+    for (const row of rows) {
+      if (row === null || typeof row !== "object" || Array.isArray(row)) {
+        continue;
+      }
+      const record = row as { idempotency_key?: unknown; result?: unknown };
+      if (
+        typeof record.idempotency_key !== "string" ||
+        record.result === null ||
+        typeof record.result !== "object" ||
+        !("mapId" in record.result)
+      ) {
+        continue;
+      }
+      return {
+        idempotencyKey: record.idempotency_key,
+        result: record.result as MapReceipt["result"],
+      } satisfies MapReceipt;
+    }
+    return undefined;
+  });
+
+  const writeCommit = Effect.fn("SurrealMemoryStore.writeCommit")(function* (commit: MapCommit) {
+    const vars: Record<string, unknown> = { map_id: toRecordId(commit.mapId) };
+    const lines = ["BEGIN TRANSACTION;", "DELETE contains WHERE in = $map_id;"];
+    commit.upserts.forEach((record, index) => {
+      vars[`id_${index}`] = toRecordId(record.id);
+      vars[`content_${index}`] = toContent(record);
+      lines.push(`UPSERT $id_${index} MERGE $content_${index};`);
+    });
+    commit.deleteIds.forEach((id, index) => {
+      vars[`delete_${index}`] = toRecordId(id);
+      lines.push(`DELETE $delete_${index};`);
+    });
+    commit.edges.forEach((edge, index) => {
+      const verb = edge.verb === "worktree_of" ? "worktree_of" : "contains";
+      vars[`from_${index}`] = toRecordId(edge.from);
+      vars[`to_${index}`] = toRecordId(edge.to);
+      vars[`meta_${index}`] = edge.meta ?? {};
+      lines.push(`RELATE $from_${index}->${verb}->$to_${index} CONTENT $meta_${index};`);
+    });
+    vars.receipt_id = toRecordId(commit.receiptId);
+    vars.receipt = {
+      idempotency_key: commit.receipt.idempotencyKey,
+      result: commit.receipt.result,
+      map_id: commit.result.mapId,
+      revision: commit.result.revision,
+    };
+    lines.push("UPSERT $receipt_id MERGE $receipt;");
+    lines.push("COMMIT TRANSACTION;");
+    yield* run(lines.join("\n"), vars);
+  });
+
+  const applyMap = Effect.fn("SurrealMemoryStore.applyMap")(function* (input: MapApplyInput) {
+    const records = new Map<string, StoredMemoryRecord>();
+    const edges: StoredMemoryEdge[] = [];
+    const mapId = mapStorageId(input.identity, input.slug);
+    if (mapId !== undefined) {
+      const map = yield* loadRecord(mapId);
+      if (map !== undefined) {
+        records.set(map.id, map);
+        const memberEdges = yield* loadContains(mapId);
+        edges.push(...memberEdges);
+        for (const edge of memberEdges) {
+          const member = yield* loadRecord(edge.to);
+          if (member !== undefined) {
+            records.set(member.id, member);
+          }
+        }
+      }
+    }
+    for (const projectId of [
+      workspaceProjectId(input.identity.workspaceKey),
+      workspaceProjectId(input.identity.primaryWorkspaceKey),
+    ]) {
+      const project = yield* loadRecord(projectId);
+      if (project !== undefined) {
+        records.set(project.id, project);
+      }
+    }
+    edges.push(...(yield* loadWorktreeEdges(workspaceProjectId(input.identity.workspaceKey))));
+    const receipt = yield* loadReceipt(receiptIdFor(input.idempotencyKey.trim(), input.identity));
+    const plan = yield* planMapApply({ records, edges, receipt }, input);
+    if (plan.kind === "replay") {
+      return plan.result;
+    }
+    yield* writeCommit(plan.commit);
+    return plan.commit.result;
+  });
+
+  const readMap = Effect.fn("SurrealMemoryStore.readMap")(function* (input: MapReadInput) {
+    if (input.id === undefined && input.slug === undefined) {
+      return yield* fail("scope_required", "Pass id or slug.");
+    }
+    const loaded: StoredMemoryRecord[] = [];
+    if (input.id !== undefined) {
+      const record = yield* loadRecord(input.id);
+      if (record !== undefined) {
+        loaded.push(record);
+      }
+    } else {
+      const rows = yield* run(
+        "SELECT * FROM work_map WHERE environment_id = $environment AND user_slug = $slug",
+        { environment: input.identity.environmentId, slug: input.slug },
+      );
+      for (const row of rows) {
+        const record = fromRow(row);
+        if (record !== undefined) {
+          loaded.push(record);
+        }
+      }
+    }
+    const map = findMap(loaded, input);
+    if (map === undefined) {
+      return yield* fail("not_found");
+    }
+    const memberEdges = yield* loadContains(map.id);
+    const records = new Map<string, StoredMemoryRecord>([[map.id, map]]);
+    for (const edge of memberEdges) {
+      const member = yield* loadRecord(edge.to);
+      if (member !== undefined) {
+        records.set(member.id, member);
+      }
+    }
+    return presentMap(map, records, memberEdges, input.view);
   });
 
   const ingestTurn = Effect.fn("SurrealMemoryStore.ingestTurn")(function* (input: IngestTurnInput) {
@@ -531,5 +743,7 @@ export const makeSurrealMemoryStore = (client: MemorySurrealClient): MemoryStore
     recall,
     bootstrap,
     ingestTurn,
+    applyMap,
+    readMap,
   };
 };

@@ -424,6 +424,7 @@ export const recallFromStore = (
   records: Iterable<StoredMemoryRecord>,
   edges: ReadonlyArray<StoredMemoryEdge>,
   input: RecallInput,
+  vectorScores?: ReadonlyMap<string, number>,
 ): { cards: MemoryCard[]; tokens_est: number } => {
   const map = recordMap(records);
   const types = input.types === undefined ? DEFAULT_RECALL_TYPES : new Set(input.types);
@@ -441,9 +442,15 @@ export const recallFromStore = (
     .map((record) => ({
       record,
       hits: ftsHitCount(input.query, record.title, record.body),
+      vector: vectorScores?.get(record.id),
     }))
-    .filter((entry) => entry.hits > 0)
+    .filter((entry) => entry.hits > 0 || entry.vector !== undefined)
     .sort((left, right) => {
+      const leftVector = left.vector ?? Number.NEGATIVE_INFINITY;
+      const rightVector = right.vector ?? Number.NEGATIVE_INFINITY;
+      if (rightVector !== leftVector) {
+        return rightVector - leftVector;
+      }
       if (right.hits !== left.hits) {
         return right.hits - left.hits;
       }

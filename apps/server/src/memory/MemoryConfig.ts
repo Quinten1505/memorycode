@@ -14,11 +14,18 @@ export interface MemoryConfigValue {
   /** When true (default), T3 starts a loopback Surreal if one is not already healthy. */
   readonly autostart: boolean;
   readonly dataDir: string | undefined;
+  readonly ollamaUrl: string;
+  readonly ollamaModel: string;
+  /** When true (default), T3 starts loopback Ollama and loads the embedding model. */
+  readonly ollamaAutostart: boolean;
 }
 
 const DEFAULT_NAMESPACE = "harness";
 const DEFAULT_DATABASE = "memory";
-const DEFAULT_EMBED_DIM = 1536;
+/** Native width of qwen3-embedding 8B. Changing this rebuilds every HNSW index. */
+export const DEFAULT_EMBED_DIM = 4096;
+export const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
+export const DEFAULT_OLLAMA_MODEL = "qwen3-embedding:8b-q4_K_M";
 
 const present = (value: string | undefined): string | undefined => {
   if (value === undefined) {
@@ -58,6 +65,9 @@ export function decodeMemoryConfig(
     embedDim: parseEmbedDim(env.EMBED_DIM),
     autostart: parseAutostart(env.SURREAL_AUTOSTART),
     dataDir: present(env.SURREAL_DATA_DIR),
+    ollamaUrl: present(env.OLLAMA_URL) ?? DEFAULT_OLLAMA_URL,
+    ollamaModel: present(env.OLLAMA_EMBED_MODEL) ?? DEFAULT_OLLAMA_MODEL,
+    ollamaAutostart: parseAutostart(env.OLLAMA_AUTOSTART),
   };
 }
 
@@ -88,6 +98,14 @@ const MemoryEnvConfig = Config.all({
     Config.map((option) => parseAutostart(Option.getOrUndefined(option))),
   ),
   dataDir: optionalText("SURREAL_DATA_DIR"),
+  ollamaUrl: optionalText("OLLAMA_URL").pipe(Config.map((value) => value ?? DEFAULT_OLLAMA_URL)),
+  ollamaModel: optionalText("OLLAMA_EMBED_MODEL").pipe(
+    Config.map((value) => value ?? DEFAULT_OLLAMA_MODEL),
+  ),
+  ollamaAutostart: Config.string("OLLAMA_AUTOSTART").pipe(
+    Config.option,
+    Config.map((option) => parseAutostart(Option.getOrUndefined(option))),
+  ),
 });
 
 export class MemoryConfig extends Context.Service<MemoryConfig, MemoryConfigValue>()(

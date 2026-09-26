@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 
 import type { StoredMemoryRecord } from "./cards.ts";
 import { makeInMemoryMemoryStore } from "./InMemoryMemoryStore.ts";
-import { bootstrapFromStore, buildRemember } from "./storeLogic.ts";
+import { bootstrapFromStore, buildRemember, recallFromStore } from "./storeLogic.ts";
 
 const base = {
   slug: "te0820-uio-not-mmap",
@@ -79,6 +79,42 @@ describe("recall and bootstrap", () => {
       expect(result.cards.map((card) => card.id)).toContain("component:pl-fabric");
     }),
   );
+
+  it("ranks vector neighbors that miss the substring query", () => {
+    const records: StoredMemoryRecord[] = [
+      {
+        id: "decision:semantic",
+        type: "decision",
+        title: "Map registers through UIO",
+        body: "Avoid /dev/mem on the PL.",
+        status: "accepted",
+        confidence: 0.6,
+        scope: ["project:te0820-hil"],
+        tags: [],
+        extra: {},
+        authoredBy: "agent:harness",
+      },
+      {
+        id: "decision:unrelated",
+        type: "decision",
+        title: "Use React",
+        body: "Web UI.",
+        status: "accepted",
+        confidence: 0.9,
+        scope: ["project:te0820-hil"],
+        tags: [],
+        extra: {},
+        authoredBy: "agent:harness",
+      },
+    ];
+    const result = recallFromStore(
+      records,
+      [],
+      { query: "zzzz", project: "te0820-hil" },
+      new Map([["decision:semantic", 0.91]]),
+    );
+    expect(result.cards.map((card) => card.id)).toEqual(["decision:semantic"]);
+  });
 
   it.effect("stamps valid_from on full-spine create so recent lessons can expire", () =>
     Effect.gen(function* () {

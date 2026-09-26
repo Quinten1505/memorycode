@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
@@ -27,9 +28,10 @@ const THREAD_ID = ThreadId.make("thread-1");
 
 const invocation = (
   capabilities: ReadonlyArray<McpInvocationContext.McpCapability>,
+  threadId: ThreadId = THREAD_ID,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
-  threadId: THREAD_ID,
+  threadId,
   providerSessionId: "provider-session-1",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(capabilities),
@@ -108,7 +110,9 @@ const makeHarness = Effect.fn("makeMemoryToolkitHarness")(function* (options: Ha
   const dependencies = Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
       getThreadShellById: (threadId) =>
-        Effect.succeed(threadId === THREAD_ID ? Option.fromNullishOr(thread) : Option.none()),
+        Effect.succeed(
+          thread !== null && thread.id === threadId ? Option.some(thread) : Option.none(),
+        ),
       getProjectShellById: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
     Layer.succeed(MemoryService, MemoryService.of({ store })),
@@ -127,7 +131,10 @@ const makeHarness = Effect.fn("makeMemoryToolkitHarness")(function* (options: Ha
       Effect.map(
         (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof MemoryToolkit.tools)[Name]>,
       ),
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
+      Effect.provideService(
+        McpInvocationContext.McpInvocationContext,
+        invocation(capabilities, thread?.id ?? THREAD_ID),
+      ),
       Effect.provide(dependencies),
     );
   return { bootstrapCalls, statusCalls, call };
@@ -220,6 +227,111 @@ describe("memory toolkit handlers", () => {
         { id: "constraint:no-mmap", status: "active" },
         { id: "constraint:no-mmap", status: "active", confirm: true },
       ]);
+    }),
+  );
+
+  it.effect("saves a map from the thread and reopens the full wording from another thread", () =>
+    Effect.gen(function* () {
+      const store = makeInMemoryMemoryStore();
+      const wording = `Who owns reconnect state? ${"detail ".repeat(40)}`;
+      const project = {
+        ...makeProject("/work/app"),
+        repositoryIdentity: {
+          canonicalKey: "github.com/Quinten1505/memorycode",
+          locator: {
+            source: "git-remote" as const,
+            remoteName: "origin",
+            remoteUrl: "https://github.com/Quinten1505/memorycode.git",
+          },
+          rootPath: "/work/app",
+        },
+      };
+      const firstThread = {
+        ...makeThread(),
+        latestTurn: {
+          turnId: TurnId.make("turn-9"),
+          state: "completed" as const,
+          requestedAt: "2026-08-20T00:00:00.000Z",
+          startedAt: "2026-08-20T00:00:00.000Z",
+          completedAt: "2026-08-20T00:00:00.000Z",
+          assistantMessageId: null,
+        },
+      };
+      const secondThread = {
+        ...firstThread,
+        id: ThreadId.make("thread-2"),
+        latestTurn: { ...firstThread.latestTurn, turnId: TurnId.make("turn-10") },
+      };
+      const writer = yield* makeHarness({ store, thread: firstThread, project });
+      const reader = yield* makeHarness({ store, thread: secondThread, project });
+      const saved = yield* writer.call("memory_map_apply", {
+        idempotency_key: "chart-reconnect",
+        expected_revision: 0,
+        slug: "reconnect",
+        title: "How remote sessions reconnect",
+        destination: "A spec for reconnect ownership.",
+        notes: "Consult wayfinder and grilling.",
+        questions: [
+          {
+            slug: "retry-owner",
+            title: "Who owns retry state?",
+            wording,
+            options: [{ label: "The server", context: "One environment graph" }],
+          },
+        ],
+        fog: [{ slug: "mobile", title: "Mobile reconnect", body: "Phone paths are still dim." }],
+        exclusions: [
+          {
+            slug: "editor",
+            title: "Graphical editor",
+            body: "No new editor in this slice.",
+            reason: "The conversation is the entry point.",
+          },
+        ],
+      });
+      expect(saved).toMatchObject({
+        revision: 1,
+        worktree_of: null,
+        questions: [{ slug: "retry-owner" }],
+      });
+      const overview = yield* reader.call("memory_map_get", { slug: "reconnect" });
+      expect(overview).toMatchObject({
+        view: "overview",
+        map: { destination: "A spec for reconnect ownership.", revision: 1 },
+        questions: [{ slug: "retry-owner", title: "Who owns retry state?" }],
+        exclusions: [{ slug: "editor", reason: "The conversation is the entry point." }],
+      });
+      expect(overview).not.toHaveProperty("map.notes");
+      const full = yield* reader.call("memory_map_get", { slug: "reconnect", view: "full" });
+      expect(full).toMatchObject({
+        view: "full",
+        map: {
+          notes: "Consult wayfinder and grilling.",
+          destination: "A spec for reconnect ownership.",
+        },
+        provenance: {
+          environment_id: "environment-1",
+          repository_key: "github.com/Quinten1505/memorycode",
+          workspace_key: "/work/app",
+          source_thread_id: THREAD_ID,
+          source_turn_id: "turn-9",
+        },
+        questions: [
+          {
+            wording,
+            options: [{ label: "The server", context: "One environment graph" }],
+          },
+        ],
+        fog: [{ body: "Phone paths are still dim." }],
+        exclusions: [
+          { body: "No new editor in this slice.", reason: "The conversation is the entry point." },
+        ],
+      });
+      if (!("questions" in full) || !("questions" in overview)) {
+        return;
+      }
+      expect(full.questions[0]?.wording).toBe(wording);
+      expect(overview.questions[0]).not.toHaveProperty("wording");
     }),
   );
 });

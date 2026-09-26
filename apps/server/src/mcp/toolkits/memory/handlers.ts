@@ -5,7 +5,9 @@ import * as Option from "effect/Option";
 import { McpServer } from "effect/unstable/ai";
 
 import { MemoryToolError } from "../../../memory/errors.ts";
+import { normalizeWorkspaceKey } from "../../../memory/mapApply.ts";
 import { MemoryService } from "../../../memory/MemoryService.ts";
+import type { MapApplyResult, MapIdentity, MapReadResult } from "../../../memory/MemoryStore.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MemoryToolkit, type MemoryErrorResult } from "./tools.ts";
@@ -37,6 +39,66 @@ const make = Effect.gen(function* () {
       return undefined;
     }
     return NodePath.basename(project.value.workspaceRoot).toLowerCase();
+  });
+
+  const currentIdentity = Effect.fn("MemoryToolkit.currentIdentity")(function* () {
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    const thread = yield* snapshots
+      .getThreadShellById(scope.threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (Option.isNone(thread)) {
+      return undefined;
+    }
+    const project = yield* snapshots
+      .getProjectShellById(thread.value.projectId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (Option.isNone(project) || project.value.workspaceRoot.length === 0) {
+      return undefined;
+    }
+    const primary = project.value.repositoryIdentity?.rootPath ?? project.value.workspaceRoot;
+    const workspace = thread.value.worktreePath ?? project.value.workspaceRoot;
+    const identity: MapIdentity = {
+      environmentId: scope.environmentId,
+      repositoryKey: project.value.repositoryIdentity?.canonicalKey ?? null,
+      workspaceKey: normalizeWorkspaceKey(workspace),
+      primaryWorkspaceKey: normalizeWorkspaceKey(primary),
+      threadId: scope.threadId,
+      turnId: thread.value.latestTurn?.turnId ?? null,
+    };
+    return identity;
+  });
+
+  const applyPayload = (result: MapApplyResult) => ({
+    map_id: result.mapId,
+    revision: result.revision,
+    workspace_project_id: result.workspaceProjectId,
+    primary_project_id: result.primaryProjectId,
+    worktree_of: result.worktreeOf,
+    questions: result.questions,
+    fog: result.fog,
+    exclusions: result.exclusions,
+  });
+
+  const readPayload = (result: MapReadResult) => ({
+    view: result.view,
+    map: {
+      id: result.map.id,
+      title: result.map.title,
+      destination: result.map.destination,
+      revision: result.map.revision,
+      ...(result.map.notes === undefined ? {} : { notes: result.map.notes }),
+    },
+    provenance: {
+      environment_id: result.provenance.environmentId,
+      repository_key: result.provenance.repositoryKey,
+      workspace_key: result.provenance.workspaceKey,
+      primary_workspace_key: result.provenance.primaryWorkspaceKey,
+      source_thread_id: result.provenance.sourceThreadId,
+      source_turn_id: result.provenance.sourceTurnId,
+    },
+    questions: result.questions,
+    fog: result.fog,
+    exclusions: result.exclusions,
   });
 
   return MemoryToolkit.of({
@@ -135,6 +197,63 @@ const make = Effect.gen(function* () {
             ...(input.links === undefined ? {} : { links: input.links }),
             ...(input.confirm === undefined ? {} : { confirm: input.confirm }),
           }),
+        );
+      }),
+    memory_map_apply: (input) =>
+      Effect.gen(function* () {
+        yield* McpInvocationContext.requireMcpCapability("memory");
+        const identity = yield* currentIdentity();
+        if (identity === undefined) {
+          return {
+            error: "scope_required",
+            hint: "Thread workspace is required to save a map.",
+          } satisfies MemoryErrorResult;
+        }
+        return yield* asToolResult(
+          memory.store
+            .applyMap({
+              idempotencyKey: input.idempotency_key,
+              expectedRevision: input.expected_revision,
+              slug: input.slug,
+              title: input.title,
+              destination: input.destination,
+              notes: input.notes,
+              identity,
+              questions: input.questions.map((question) => ({
+                slug: question.slug,
+                title: question.title,
+                wording: question.wording,
+                context: question.context ?? "",
+                options: (question.options ?? []).map((option) => ({
+                  label: option.label,
+                  context: option.context ?? "",
+                })),
+              })),
+              fog: input.fog,
+              exclusions: input.exclusions,
+            })
+            .pipe(Effect.map(applyPayload)),
+        );
+      }),
+    memory_map_get: (input) =>
+      Effect.gen(function* () {
+        yield* McpInvocationContext.requireMcpCapability("memory");
+        const identity = yield* currentIdentity();
+        if (identity === undefined) {
+          return {
+            error: "scope_required",
+            hint: "Thread workspace is required to read a map.",
+          } satisfies MemoryErrorResult;
+        }
+        return yield* asToolResult(
+          memory.store
+            .readMap({
+              identity,
+              view: input.view ?? "overview",
+              ...(input.id === undefined ? {} : { id: input.id }),
+              ...(input.slug === undefined ? {} : { slug: input.slug }),
+            })
+            .pipe(Effect.map(readPayload)),
         );
       }),
   });

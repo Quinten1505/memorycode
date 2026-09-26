@@ -77,6 +77,8 @@ export const EDGE_VERBS = [
   "mentions",
   "occurred_in",
   "evidenced_by",
+  "contains",
+  "worktree_of",
 ] as const;
 export type EdgeVerb = (typeof EDGE_VERBS)[number];
 
@@ -153,6 +155,14 @@ export const EDGE_ENDS = {
   evidenced_by: {
     in: [...KNOWLEDGE_TYPES],
     out: ["artifact", "symbol", "run"],
+  },
+  contains: {
+    in: ["work_map"],
+    out: ["question", "thought"],
+  },
+  worktree_of: {
+    in: ["project"],
+    out: ["project"],
   },
 } as const satisfies Record<
   EdgeVerb,
@@ -273,6 +283,27 @@ export const EXTRA_FIELDS = {
   project: { keys: ["root_path"] },
   episode: { keys: ["started_at", "ended_at"] },
 } as const satisfies Readonly<Partial<Record<RememberType, ExtraFieldSpec>>>;
+
+/** Wayfinder slice. Written by memory_map_apply, not memory_remember. */
+export const MAP_EXTRA_FIELDS = {
+  work_map: {
+    keys: [
+      "destination",
+      "notes",
+      "revision",
+      "environment_id",
+      "repository_key",
+      "workspace_key",
+      "primary_workspace_key",
+      "source_thread_id",
+      "source_turn_id",
+      "user_slug",
+    ],
+  },
+  question: {
+    keys: ["wording", "context", "options", "user_slug", "map_id"],
+  },
+} as const;
 
 export const SCOPE_KEYS = ["project", "repo", "domain", "sensitivity"] as const;
 export type ScopeKey = (typeof SCOPE_KEYS)[number];

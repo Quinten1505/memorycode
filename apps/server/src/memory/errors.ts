@@ -14,6 +14,7 @@ export class MemoryToolError extends Schema.TaggedError<MemoryToolError>()("Memo
     "scope_required",
     "not_a_thought",
     "already_promoted",
+    "revision_conflict",
     "backend_unavailable",
   ]),
   hint: Schema.optional(Schema.String),

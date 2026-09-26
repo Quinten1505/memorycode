@@ -4,11 +4,14 @@ import type { StoredMemoryEdge, StoredMemoryRecord } from "./cards.ts";
 import type {
   BootstrapInput,
   IngestTurnInput,
+  MapApplyInput,
+  MapReadInput,
   MemoryStore,
   RecallInput,
   RememberInput,
 } from "./MemoryStore.ts";
 import { runIngestTurn } from "./ingestTurn.ts";
+import { findMap, planMapApply, presentMap, receiptIdFor, type MapReceipt } from "./mapApply.ts";
 import {
   applyStatus,
   assertReclassifyTarget,
@@ -28,6 +31,7 @@ import {
 export const makeInMemoryMemoryStore = (): MemoryStore => {
   const records = new Map<string, StoredMemoryRecord>();
   const edges: StoredMemoryEdge[] = [];
+  const receipts = new Map<string, MapReceipt>();
 
   const applyEdge = (edge: StoredMemoryEdge) => {
     const next = withEdgeDefaults(edge);
@@ -132,6 +136,61 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
       Effect.withSpan("InMemoryMemoryStore.bootstrap"),
     );
 
+  const applyMap = Effect.fn("InMemoryMemoryStore.applyMap")(function* (input: MapApplyInput) {
+    const plan = yield* planMapApply(
+      {
+        records,
+        edges,
+        receipt: receipts.get(receiptIdFor(input.idempotencyKey.trim(), input.identity)),
+      },
+      input,
+    );
+    if (plan.kind === "replay") {
+      return plan.result;
+    }
+    const removed = new Set(plan.commit.deleteIds);
+    const nextRecords = new Map(records);
+    const nextEdges = edges.filter(
+      (edge) =>
+        !removed.has(edge.from) &&
+        !removed.has(edge.to) &&
+        !(edge.verb === "contains" && edge.from === plan.commit.mapId),
+    );
+    for (const incoming of plan.commit.upserts) {
+      const existing = nextRecords.get(incoming.id);
+      nextRecords.set(
+        incoming.id,
+        existing === undefined
+          ? incoming
+          : { ...existing, ...incoming, extra: { ...existing.extra, ...incoming.extra } },
+      );
+    }
+    for (const id of removed) {
+      nextRecords.delete(id);
+    }
+    records.clear();
+    for (const [id, record] of nextRecords) {
+      records.set(id, record);
+    }
+    edges.splice(0, edges.length, ...nextEdges);
+    for (const edge of plan.commit.edges) {
+      applyEdge(edge);
+    }
+    receipts.set(plan.commit.receiptId, plan.commit.receipt);
+    return plan.commit.result;
+  });
+
+  const readMap = Effect.fn("InMemoryMemoryStore.readMap")(function* (input: MapReadInput) {
+    if (input.id === undefined && input.slug === undefined) {
+      return yield* fail("scope_required", "Pass id or slug.");
+    }
+    const map = findMap(records.values(), input);
+    if (map === undefined) {
+      return yield* fail("not_found");
+    }
+    return presentMap(map, records, edges, input.view);
+  });
+
   const ingestTurn = (input: IngestTurnInput) =>
     runIngestTurn(
       { remember, recall },
@@ -164,5 +223,7 @@ export const makeInMemoryMemoryStore = (): MemoryStore => {
     recall,
     bootstrap,
     ingestTurn,
+    applyMap,
+    readMap,
   };
 };

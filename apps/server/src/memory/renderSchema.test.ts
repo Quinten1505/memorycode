@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { renderMemorySchema } from "./renderSchema.ts";
+import {
+  MEMORY_SCHEMA_VERSION,
+  renderMemorySchema,
+  renderWayfinderMigration,
+} from "./renderSchema.ts";
 import { EDGE_ENDS, EDGE_VERBS, EXTRA_FIELDS } from "./vocabulary.ts";
 
 const TABLES = [
@@ -29,6 +33,8 @@ const TABLES = [
   "tool",
   "observation",
   "episode",
+  "work_map",
+  "question",
   "in_project",
   "promoted_to",
   "motivated",
@@ -47,6 +53,8 @@ const TABLES = [
   "tagged",
   "mentions",
   "occurred_in",
+  "contains",
+  "worktree_of",
 ] as const;
 
 const INDEXED_TABLES = [
@@ -65,6 +73,8 @@ const INDEXED_TABLES = [
   "interface",
   "episode",
   "observation",
+  "work_map",
+  "question",
 ] as const;
 
 const PROVIDERS = [
@@ -106,6 +116,8 @@ describe("renderMemorySchema", () => {
       "tool",
       "observation",
       "episode",
+      "work_map",
+      "question",
       "in_project",
       "promoted_to",
       "motivated",
@@ -124,6 +136,8 @@ describe("renderMemorySchema", () => {
       "tagged",
       "mentions",
       "occurred_in",
+      "contains",
+      "worktree_of",
     ]) {
       expect(sql).toContain(`DEFINE TABLE OVERWRITE ${table}`);
     }
@@ -280,5 +294,19 @@ describe("renderMemorySchema", () => {
 
     expect(sql).toContain("DEFINE INDEX OVERWRITE idx_facet ON thought FIELDS facet");
     expect(sql).not.toContain("DEFINE INDEX OVERWRITE idx_body_fts ON project");
+  });
+
+  it("migrates wayfinder tables additively and leaves existing cards defined", () => {
+    const sql = renderWayfinderMigration({ embedDim: 1536 });
+    expect(MEMORY_SCHEMA_VERSION).toBe(2);
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS work_map SCHEMAFULL");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS question SCHEMAFULL");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS contains SCHEMAFULL TYPE RELATION");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS worktree_of SCHEMAFULL TYPE RELATION");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS map_apply SCHEMALESS");
+    expect(sql).toContain("UPSERT memory_schema:current SET version = 2");
+    expect(sql).not.toContain("OVERWRITE");
+    expect(sql).not.toContain("decision");
+    expect(sql).not.toContain("DEFINE TABLE IF NOT EXISTS project");
   });
 });

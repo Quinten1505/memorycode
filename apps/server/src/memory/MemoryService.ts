@@ -11,10 +11,12 @@ import {
   ensureLocalSurreal,
   isLoopbackUrl,
 } from "./ensureLocalSurreal.ts";
+import { ensureLocalOllama } from "./ensureLocalOllama.ts";
 import { MemoryToolError } from "./errors.ts";
 import { MemoryConfig, type MemoryConfigValue } from "./MemoryConfig.ts";
 import type { MemoryStore } from "./MemoryStore.ts";
-import { renderMemorySchema } from "./renderSchema.ts";
+import { makeOllamaEmbedder, type MemoryEmbedder } from "./ollamaEmbed.ts";
+import { renderMemorySchema, renderWayfinderMigration } from "./renderSchema.ts";
 import { makeSurrealMemoryStore, type MemorySurrealClient } from "./SurrealMemoryStore.ts";
 
 export type MemorySurrealFactory = () => MemorySurrealClient;
@@ -22,6 +24,15 @@ export type MemorySurrealFactory = () => MemorySurrealClient;
 export type EnsureLocalSurreal = (
   input: Parameters<typeof ensureLocalSurreal>[0],
 ) => Promise<unknown>;
+
+export type EnsureLocalOllama = (
+  input: Parameters<typeof ensureLocalOllama>[0],
+) => Promise<unknown>;
+
+export type MemoryServiceHooks = {
+  readonly ensureOllama?: EnsureLocalOllama;
+  readonly embedder?: MemoryEmbedder;
+};
 
 const resolvedBackend = (config: MemoryConfigValue) => {
   const url = config.url ?? (config.autostart ? DEFAULT_LOCAL_URL : undefined);
@@ -52,12 +63,15 @@ export const unavailableStore: MemoryStore = {
   recall: () => unavailable(),
   bootstrap: () => unavailable(),
   ingestTurn: () => unavailable(),
+  applyMap: () => unavailable(),
+  readMap: () => unavailable(),
 };
 
 const openStore = async (
   url: string,
   config: MemoryConfig["Service"],
   createSurreal: MemorySurrealFactory,
+  embedder?: MemoryEmbedder,
 ): Promise<MemoryStore> => {
   const db = createSurreal();
   const authentication =
@@ -69,30 +83,44 @@ const openStore = async (
     database: config.database,
     ...(authentication === undefined ? {} : { authentication }),
   });
-  const applied = db.query(
-    renderMemorySchema({
-      embedDim: config.embedDim,
-      namespace: config.namespace,
-      database: config.database,
-    }),
-  );
-  if (
-    applied !== null &&
-    typeof applied === "object" &&
-    "collect" in applied &&
-    typeof (applied as { collect?: unknown }).collect === "function"
-  ) {
-    await (applied as { collect: () => Promise<unknown> }).collect();
-  } else {
+  const settle = async (applied: unknown) => {
+    if (
+      applied !== null &&
+      typeof applied === "object" &&
+      "collect" in applied &&
+      typeof (applied as { collect?: unknown }).collect === "function"
+    ) {
+      await (applied as { collect: () => Promise<unknown> }).collect();
+      return;
+    }
     await applied;
-  }
-  return makeSurrealMemoryStore(db);
+  };
+  await settle(
+    db.query(
+      renderMemorySchema({
+        embedDim: config.embedDim,
+        namespace: config.namespace,
+        database: config.database,
+      }),
+    ),
+  );
+  await settle(
+    db.query(
+      renderWayfinderMigration({
+        embedDim: config.embedDim,
+        namespace: config.namespace,
+        database: config.database,
+      }),
+    ),
+  );
+  return makeSurrealMemoryStore(db, embedder);
 };
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = (
   createSurreal: MemorySurrealFactory = () => new Surreal(),
   ensureLocal?: EnsureLocalSurreal,
+  hooks: MemoryServiceHooks = {},
 ) =>
   Effect.gen(function* () {
     const config = yield* MemoryConfig;
@@ -100,6 +128,22 @@ export const make = (
     if (backend === undefined) {
       yield* Effect.logInfo("memory MCP tools are registered but have no backend");
       return MemoryService.of({ store: unavailableStore });
+    }
+    if (config.ollamaAutostart && isLoopbackUrl(config.ollamaUrl)) {
+      yield* Effect.tryPromise({
+        try: () =>
+          (hooks.ensureOllama ?? ensureLocalOllama)({
+            url: config.ollamaUrl,
+            model: config.ollamaModel,
+            dimensions: config.embedDim,
+          }),
+        catch: (cause) => (cause instanceof Error ? cause : new Error("ollama start failed")),
+      }).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Could not autostart local Ollama embedder", { cause }),
+        ),
+        Effect.ignore,
+      );
     }
     if (backend.autostart && isLoopbackUrl(backend.url)) {
       const localInput = {
@@ -124,6 +168,13 @@ export const make = (
       );
     }
     const url = backend.url;
+    const embedder =
+      hooks.embedder ??
+      makeOllamaEmbedder({
+        url: config.ollamaUrl,
+        model: config.ollamaModel,
+        dimensions: config.embedDim,
+      });
     const store = yield* Effect.tryPromise({
       try: () =>
         openStore(
@@ -135,6 +186,7 @@ export const make = (
             password: backend.password,
           },
           createSurreal,
+          embedder,
         ),
       catch: (cause) => (cause instanceof Error ? cause : new Error("surreal connect failed")),
     }).pipe(

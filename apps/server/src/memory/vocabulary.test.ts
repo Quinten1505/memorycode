@@ -60,6 +60,8 @@ describe("vocabulary", () => {
       "mentions",
       "occurred_in",
       "evidenced_by",
+      "contains",
+      "worktree_of",
     ] as const;
 
     for (const verb of expected) {

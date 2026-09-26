@@ -32,6 +32,7 @@ export const MemoryErrorCode = Schema.Literals([
   "scope_required",
   "not_a_thought",
   "already_promoted",
+  "revision_conflict",
   "backend_unavailable",
 ]);
 
@@ -295,6 +296,142 @@ const MemoryReclassifyTool = Tool.make("memory_reclassify", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const MapOptionInput = Schema.Struct({
+  label: Schema.String,
+  context: Schema.optional(Schema.String),
+});
+
+const MapQuestionInput = Schema.Struct({
+  slug: Schema.String,
+  title: Schema.String,
+  wording: Schema.String.annotate({
+    description: "Full question wording. Stored and returned intact.",
+  }),
+  context: Schema.optional(Schema.String),
+  options: Schema.optional(Schema.Array(MapOptionInput)),
+});
+
+const MapFogInput = Schema.Struct({
+  slug: Schema.String,
+  title: Schema.String,
+  body: Schema.String.annotate({ description: "Full fog text." }),
+});
+
+const MapExclusionInput = Schema.Struct({
+  slug: Schema.String,
+  title: Schema.String,
+  body: Schema.String,
+  reason: Schema.String.annotate({ description: "Why this is out of scope." }),
+});
+
+const MapNodeRefSchema = Schema.Struct({
+  slug: Schema.String,
+  id: Schema.String,
+});
+
+const MapApplyResultSchema = Schema.Struct({
+  map_id: Schema.String,
+  revision: Schema.Number,
+  workspace_project_id: Schema.String,
+  primary_project_id: Schema.String,
+  worktree_of: Schema.NullOr(Schema.String),
+  questions: Schema.Array(MapNodeRefSchema),
+  fog: Schema.Array(MapNodeRefSchema),
+  exclusions: Schema.Array(MapNodeRefSchema),
+});
+
+const MapQuestionView = Schema.Struct({
+  id: Schema.String,
+  slug: Schema.String,
+  title: Schema.String,
+  wording: Schema.optional(Schema.String),
+  context: Schema.optional(Schema.String),
+  options: Schema.optional(
+    Schema.Array(Schema.Struct({ label: Schema.String, context: Schema.String })),
+  ),
+});
+
+const MapFogView = Schema.Struct({
+  id: Schema.String,
+  slug: Schema.String,
+  title: Schema.String,
+  body: Schema.optional(Schema.String),
+});
+
+const MapExclusionView = Schema.Struct({
+  id: Schema.String,
+  slug: Schema.String,
+  title: Schema.String,
+  reason: Schema.String,
+  body: Schema.optional(Schema.String),
+});
+
+const MapReadResultSchema = Schema.Struct({
+  view: Schema.Literals(["overview", "full"]),
+  map: Schema.Struct({
+    id: Schema.String,
+    title: Schema.String,
+    destination: Schema.String,
+    revision: Schema.Number,
+    notes: Schema.optional(Schema.String),
+  }),
+  provenance: Schema.Struct({
+    environment_id: Schema.String,
+    repository_key: Schema.NullOr(Schema.String),
+    workspace_key: Schema.String,
+    primary_workspace_key: Schema.String,
+    source_thread_id: Schema.String,
+    source_turn_id: Schema.NullOr(Schema.String),
+  }),
+  questions: Schema.Array(MapQuestionView),
+  fog: Schema.Array(MapFogView),
+  exclusions: Schema.Array(MapExclusionView),
+});
+
+const MemoryMapApplyTool = Tool.make("memory_map_apply", {
+  description:
+    "Save a Wayfinder map for this thread's environment, repository, and workspace. The batch is the full question, fog, and exclusion membership. Send full wording, options, notes, fog, and exclusion reasons. expected_revision is 0 for the first save, then the revision last returned. Reuse idempotency_key only to retry that same save; a retry returns the original node ids. revision_conflict means read the map and apply again with its current revision and a new key. A worktree is linked to the primary checkout. Another directory with the same basename is a different map.",
+  parameters: Schema.Struct({
+    idempotency_key: Schema.String,
+    expected_revision: Schema.Number,
+    slug: Schema.String.annotate({
+      description: "Stable kebab slug for this map in the workspace.",
+    }),
+    title: Schema.String,
+    destination: Schema.String,
+    notes: Schema.String,
+    questions: Schema.Array(MapQuestionInput),
+    fog: Schema.Array(MapFogInput),
+    exclusions: Schema.Array(MapExclusionInput),
+  }),
+  success: Schema.Union([MapApplyResultSchema, MemoryErrorResult]),
+  failure: McpCapabilityUnavailableError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Save a Wayfinder map")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const MemoryMapGetTool = Tool.make("memory_map_get", {
+  description:
+    "Reopen a Wayfinder map saved in this environment and project. Pass slug or id. view overview lists titles and exclusion reasons. view full returns destination, notes, question wording, options, fog, and exclusion text as stored, without shortening them. A worktree reads the primary checkout's map until this workspace has its own.",
+  parameters: Schema.Struct({
+    id: Schema.optional(Schema.String),
+    slug: Schema.optional(Schema.String),
+    view: Schema.optional(Schema.Literals(["overview", "full"])),
+  }),
+  success: Schema.Union([MapReadResultSchema, MemoryErrorResult]),
+  failure: McpCapabilityUnavailableError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read a Wayfinder map")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const MemoryToolkit = Toolkit.make(
   MemoryBootstrapTool,
   MemoryRecallTool,
@@ -303,4 +440,6 @@ export const MemoryToolkit = Toolkit.make(
   MemoryLinkTool,
   MemoryStatusTool,
   MemoryReclassifyTool,
+  MemoryMapApplyTool,
+  MemoryMapGetTool,
 );
